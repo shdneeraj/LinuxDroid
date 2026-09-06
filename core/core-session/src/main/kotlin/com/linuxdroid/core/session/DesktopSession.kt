@@ -9,6 +9,7 @@ import com.linuxdroid.core.logging.LinuxDroidLogger
 import com.linuxdroid.core.logging.LogSubsystem
 import com.linuxdroid.core.model.*
 import com.linuxdroid.core.network.NetworkManager
+import com.linuxdroid.core.runtime.GuestInit
 import com.linuxdroid.core.runtime.RuntimeManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -47,14 +48,21 @@ class DesktopSession(
         val rootfsDir = storage.rootfsDir(environment.id)
         ensureGuiSessionEnvironment(rootfsDir)
 
+        val lddmPath = listOf("/usr/bin/lddm", "/usr/local/bin/lddm")
+            .firstOrNull { File(rootfsDir, it.removePrefix("/")).exists() }
+            ?: "/usr/bin/lddm"
+
         val spec = RuntimeSpec.fromEnvironment(
             environment = environment,
-            command = listOf("/bin/sh", "/usr/local/bin/linuxdroid-session"),
+            command = listOf(GuestInit.GUEST_INIT_PATH, lddmPath),
             workingDirectory = "/home/user",
             extraEnv = mapOf(
                 "WAYLAND_DISPLAY" to waylandSocket,
                 "XDG_RUNTIME_DIR" to "/tmp",
                 "DISPLAY" to ":0",
+                "XDG_SESSION_TYPE" to "wayland",
+                "XDG_CURRENT_DESKTOP" to "LDDE",
+                "XDG_SESSION_DESKTOP" to "LDDE",
             ),
         )
 
@@ -83,18 +91,30 @@ class DesktopSession(
     }
 
     private fun ensureGuiSessionEnvironment(rootfsDir: File) {
-        val binDir = File(rootfsDir, "usr/local/bin").apply { mkdirs() }
-        val sessionScript = File(binDir, "linuxdroid-session")
-        if (!sessionScript.exists()) {
-            sessionScript.writeText(
+        val envFile = File(rootfsDir, "etc/environment")
+        if (!envFile.exists()) {
+            envFile.parentFile?.mkdirs()
+            envFile.writeText(
                 """
-                #!/bin/sh
-                export XDG_RUNTIME_DIR=/tmp
-                export WAYLAND_DISPLAY=${'$'}{WAYLAND_DISPLAY:-wayland-0}
-                exec dbus-launch --exit-with-session /bin/sh
-                """.trimIndent()
+                WAYLAND_DISPLAY=wayland-0
+                XDG_RUNTIME_DIR=/tmp
+                DISPLAY=:0
+                XDG_SESSION_TYPE=wayland
+                XDG_CURRENT_DESKTOP=LDDE
+                XDG_SESSION_DESKTOP=LDDE
+                GDK_BACKEND=wayland,x11
+                QT_QPA_PLATFORM=wayland;xcb
+                CLUTTER_BACKEND=wayland
+                SDL_VIDEODRIVER=wayland
+                """.trimIndent() + "\n"
             )
-            sessionScript.setExecutable(true, false)
+        }
+
+        val initFile = File(rootfsDir, GuestInit.GUEST_INIT_PATH.removePrefix("/"))
+        if (!initFile.exists()) {
+            initFile.parentFile?.mkdirs()
+            initFile.writeText(GuestInit.SCRIPT_CONTENT)
+            initFile.setExecutable(true, false)
         }
     }
 }

@@ -780,9 +780,16 @@ void GuiHost::workerMain() {
         enqueueWindowAction(window_id, action);
     });
 
-    // Start native DesktopSession
-    DesktopSession::getInstance().setOutputGeometry(out_w, out_h, 1);
-    DesktopSession::getInstance().start(socket_name);
+    // Start native DesktopSession only if internal fallback shell is explicitly requested.
+    // In production LinuxDroid, LDDE is the authoritative Wayland desktop shell running inside the guest.
+    const char* enable_internal = std::getenv("LINUXDROID_ENABLE_INTERNAL_SHELL");
+    if (enable_internal && std::strcmp(enable_internal, "1") == 0) {
+        LOGI("Starting internal fallback DesktopSession");
+        DesktopSession::getInstance().setOutputGeometry(out_w, out_h, 1);
+        DesktopSession::getInstance().start(socket_name);
+    } else {
+        LOGI("Internal fallback DesktopSession disabled (LDDE guest desktop environment active)");
+    }
 
     // 12. Initialization successful: signal RUNNING to waiter
     {
@@ -1126,7 +1133,13 @@ bool GuiHost::restartDesktopShell() {
         return false;
     }
 
-    LOGI("SHELL_RESTART_BEGIN: restarting desktop shell client");
+    const char* enable_internal = std::getenv("LINUXDROID_ENABLE_INTERNAL_SHELL");
+    if (!enable_internal || std::strcmp(enable_internal, "1") != 0) {
+        LOGI("SHELL_RESTART: LDDE is supervised by LDDM inside guest userspace; internal shell restart no-op");
+        return true;
+    }
+
+    LOGI("SHELL_RESTART_BEGIN: restarting internal fallback desktop shell client");
     DesktopSession::getInstance().stop();
     if (shell_client_) {
         shell_client_->stop();

@@ -13,6 +13,7 @@ import com.linuxdroid.core.model.*
 import com.linuxdroid.core.network.NetworkManager
 import com.linuxdroid.core.package_mgr.ApplicationManager
 import com.linuxdroid.core.package_mgr.DesktopExecParser
+import com.linuxdroid.core.runtime.GuestInit
 import com.linuxdroid.core.runtime.ProotRuntimeBackend
 import com.linuxdroid.core.runtime.RuntimeBackend
 import kotlinx.coroutines.CoroutineScope
@@ -185,14 +186,22 @@ class DefaultSessionManager(
             val rootfsDir = storage.rootfsDir(environment.id)
             ensureGuiSessionEnvironment(rootfsDir)
 
+            val lddmPath = listOf("/usr/bin/lddm", "/usr/local/bin/lddm")
+                .firstOrNull { File(rootfsDir, it.removePrefix("/")).exists() }
+                ?: "/usr/bin/lddm"
+
+            log.withEnvironment(environment.id).info("[SESSION_STEP_8] Launching graphical session via Guest Init -> LDDM ($lddmPath)")
             val sessionProcess = runtimeBackend.execute(
                 environment = environment,
-                command = listOf("/bin/sh", "/usr/local/bin/linuxdroid-session"),
+                command = listOf(GuestInit.GUEST_INIT_PATH, lddmPath),
                 workingDirectory = "/home/user",
                 extraEnv = mapOf(
                     "WAYLAND_DISPLAY" to waylandSocket,
                     "XDG_RUNTIME_DIR" to "/tmp",
                     "DISPLAY" to ":0",
+                    "XDG_SESSION_TYPE" to "wayland",
+                    "XDG_CURRENT_DESKTOP" to "LDDE",
+                    "XDG_SESSION_DESKTOP" to "LDDE",
                 ),
                 sessionId = sessionId,
             )
@@ -333,6 +342,9 @@ class DefaultSessionManager(
                 WAYLAND_DISPLAY=wayland-0
                 XDG_RUNTIME_DIR=/tmp
                 DISPLAY=:0
+                XDG_SESSION_TYPE=wayland
+                XDG_CURRENT_DESKTOP=LDDE
+                XDG_SESSION_DESKTOP=LDDE
                 GDK_BACKEND=wayland,x11
                 QT_QPA_PLATFORM=wayland;xcb
                 CLUTTER_BACKEND=wayland
@@ -341,32 +353,12 @@ class DefaultSessionManager(
             )
         }
 
-        // Ensure session startup script exists
-        val sessionScript = File(rootfsDir, "usr/local/bin/linuxdroid-session")
-        if (!sessionScript.exists()) {
-            sessionScript.parentFile?.mkdirs()
-            sessionScript.writeText(
-                """
-                #!/bin/sh
-                export XDG_RUNTIME_DIR=/tmp
-                export WAYLAND_DISPLAY=wayland-0
-                export DISPLAY=:0
-                mkdir -p /tmp
-                chmod 1777 /tmp
-                # LinuxDroid Wayland compositor is hosted by libweston in Android runtime.
-                # Guest GUI clients connect directly to ${'$'}WAYLAND_DISPLAY.
-                if command -v foot >/dev/null 2>&1; then
-                    exec foot
-                elif command -v weston-terminal >/dev/null 2>&1; then
-                    exec weston-terminal
-                elif command -v xterm >/dev/null 2>&1; then
-                    exec xterm
-                else
-                    exec /bin/sh -c "while true; do sleep 3600; done"
-                fi
-                """.trimIndent() + "\n"
-            )
-            sessionScript.setExecutable(true, false)
+        // Ensure persistent guest init exists and is executable
+        val initFile = File(rootfsDir, GuestInit.GUEST_INIT_PATH.removePrefix("/"))
+        if (!initFile.exists()) {
+            initFile.parentFile?.mkdirs()
+            initFile.writeText(GuestInit.SCRIPT_CONTENT)
+            initFile.setExecutable(true, false)
         }
     }
 }
