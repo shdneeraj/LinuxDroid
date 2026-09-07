@@ -6,9 +6,8 @@ import com.linuxdroid.core.logging.InstallationLogger
 import com.linuxdroid.core.logging.LinuxDroidLogger
 import com.linuxdroid.core.logging.LogSubsystem
 import com.linuxdroid.core.model.*
-import com.linuxdroid.core.runtime.GuestInit
+import com.linuxdroid.core.runtime.GuiInstallScript
 import com.linuxdroid.core.runtime.PostInstallScript
-import com.linuxdroid.core.runtime.ProotRuntimeBackend
 import com.linuxdroid.core.runtime.RuntimeBackend
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,10 +31,10 @@ import java.util.concurrent.ConcurrentHashMap
 data class RootfsDeploymentResult(
     val environmentId: EnvironmentId,
     val state: RootfsDeploymentState,
-    val lddmVersion: String?,
-    val lddeVersion: String?,
-    val westonVersion: String?,
-    val waylandVersion: String?,
+    val lddmVersion: String? = null,
+    val lddeVersion: String? = null,
+    val westonVersion: String? = null,
+    val waylandVersion: String? = null,
     val validationReport: RootfsValidationReport,
     val detail: String,
 ) {
@@ -43,32 +42,22 @@ data class RootfsDeploymentResult(
 }
 
 /**
- * Master coordinator for the LinuxDroid rootfs deployment pipeline.
+ * Master coordinator for the LinuxDroid CLI-first rootfs deployment pipeline.
  *
- * Implements the two-phase architecture:
+ * Sequence:
  * ```
- * PRE-INSTALL (Android Host)
- *      ↓
- * Create complete base Linux rootfs & inject /sbin/linuxdroid-init
- * Stage LDDM.deb + LDDE.deb into /root/.linuxdroid/packages/
- * Generate /etc/linuxdroid/install.conf & /etc/linuxdroid/.install.secret (0600)
- * Generate /etc/linuxdroid/post-install.sh (0755)
- * Validate base rootfs via Stage A extraction validation
- * Mark rootfs as PRE_INSTALL_READY
- *      ↓
- * POST-INSTALL (Linux Userspace CLI)
- *      ↓
- * Execute /sbin/linuxdroid-init CLI /bin/bash /etc/linuxdroid/post-install.sh
- * In-guest script executes package installation, user setup, sudoers, and APT cleanup
- * Validates artifacts on disk and deletes temporary secrets
- * Writes /etc/linuxdroid/POST_INSTALL_COMPLETE marker
- *      ↓
- * COMPLETION
- *      ↓
- * Host detects POST_INSTALL_COMPLETE
- * Transitions to INSTALLATION_COMPLETE → ROOTFS_READY
- * Manifest written and verified
+ * 1. Download & verify rootfs archive          -> ROOTFS_CREATING
+ * 2. Unpack archive into staging area          -> ROOTFS_EXTRACTED
+ * 3. Configure system files & inject guest init -> ROOTFS_CONFIGURING
+ * 4. Validate extraction (Stage A)             -> ROOTFS_RUNTIME_READY
+ * 5. Promote staging to active & validate (B)
+ * 6. Execute CLI provisioning in guest         -> ROOTFS_PACKAGES_INSTALLING
+ * 7. Validate final CLI rootfs (Stage D)       -> ROOTFS_VALIDATING
+ * 8. Mark complete                             -> ROOTFS_READY
  * ```
+ *
+ * Graphical components (Wayland, Weston, LDDM, LDDE) are NOT installed in this pipeline.
+ * They are provided by [GuiInstaller] as an optional, independently managed layer.
  */
 class RootfsDeploymentManager(
     private val context: Context? = null,
@@ -77,9 +66,9 @@ class RootfsDeploymentManager(
     private val extractor: RootfsExtractor = RootfsExtractor(),
     private val configurator: RootfsConfigurator = RootfsConfigurator(),
     private val runtimeSetup: RuntimeEnvironmentSetup = RuntimeEnvironmentSetup(),
-    private val graphicalInstaller: GraphicalDependencyInstaller = GraphicalDependencyInstaller(runtimeBackend),
-    private val packageInstaller: LinuxDroidPackageInstaller = LinuxDroidPackageInstaller(context, runtimeBackend),
     private val standardPackageInstaller: StandardPackageInstaller = StandardPackageInstaller(runtimeBackend),
+    private val packageInstaller: LinuxDroidPackageInstaller = LinuxDroidPackageInstaller(context, runtimeBackend),
+    private val graphicalInstaller: GraphicalDependencyInstaller = GraphicalDependencyInstaller(runtimeBackend),
     private val userConfigurator: UserConfigurator = UserConfigurator(runtimeBackend),
     private val validator: RootfsValidator = RootfsValidator(),
     private val dynamicResolver: DynamicDistributionResolver = DynamicDistributionResolver(),
@@ -97,7 +86,7 @@ class RootfsDeploymentManager(
     /**
      * Resolves or creates a dedicated [InstallationLogger] for the environment.
      */
-    private fun resolveInstallationLogger(
+    fun resolveInstallationLogger(
         environmentId: EnvironmentId,
         distribution: String,
         release: String,
@@ -150,210 +139,12 @@ class RootfsDeploymentManager(
     }
 
     /**
-     * Executes Phase 1: Pre-Install.
-     * Prepares base filesystem, guest-init, stages deb packages, and writes configuration.
-     * Never installs desktop packages, creates user accounts, or starts GUI in pre-install.
+     * Executes in-guest CLI provisioning.
+     * Installs the 33 baseline CLI packages, creates user, configures sudoers, and cleans APT.
      */
-    suspend fun executePreInstall(
+    suspend fun executeCliProvisioning(
         environment: Environment,
         installConfig: InstallConfig? = null,
-        lddmDebOverride: File? = null,
-        lddeDebOverride: File? = null,
-        installLogger: InstallationLogger? = null,
-        onProgress: suspend (Float, String) -> Unit = { _, _ -> },
-        onLog: suspend (String) -> Unit = { _ -> },
-    ): File = withContext(Dispatchers.IO) {
-        val environmentId = environment.id
-        val envKey = environmentId.value
-        val targetUser = installConfig?.username ?: environment.configuration.linuxUser
-        val targetPassword = installConfig?.password ?: ""
-        val targetDistro = installConfig?.distro ?: environment.distribution
-        val requestedRelease = installConfig?.release
-
-        val finalRootfsDir = storage.rootfsDir(environmentId)
-        val tmpDir = storage.tmpDir(environmentId)
-        val stagingDir = storage.stagingRootfsDir(environmentId)
-
-        val baseDefinition = DistributionCatalog.getDefinition(targetDistro, environment.architecture, requestedRelease)
-        val definition = dynamicResolver.resolveLatest(baseDefinition, onLog)
-        val source = definition.source
-
-        val logger = installLogger ?: resolveInstallationLogger(
-            environmentId = environmentId,
-            distribution = targetDistro.name.lowercase(),
-            release = definition.release,
-            architecture = environment.architecture.linuxArch,
-        ).apply {
-            initLogHeader()
-            writeMetadata(mapOf("target_user" to targetUser, "phase" to "PRE_INSTALL"))
-        }
-
-        var currentState = RootfsDeploymentState.PRE_INSTALLING
-        _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-        logger.updateState("PRE_INSTALLING", phase = "PRE_INSTALL", operation = "PRE_INSTALL")
-        logger.logPreInstallStart("PRE_INSTALL")
-        val preInstallStartTime = System.currentTimeMillis()
-
-        val needsExtract = !finalRootfsDir.exists() || !File(finalRootfsDir, "bin/sh").exists()
-
-        if (needsExtract) {
-            if (stagingDir.exists()) stagingDir.deleteRecursively()
-            stagingDir.mkdirs()
-
-            val archiveExt = when (source.format) {
-                ArchiveFormat.TAR_XZ -> "tar.xz"
-                ArchiveFormat.TAR_GZ -> "tar.gz"
-                ArchiveFormat.TAR_BZ2 -> "tar.bz2"
-            }
-            val tarball = File(tmpDir, "rootfs.$archiveExt")
-
-            try {
-                // 1. ROOTFS_EXTRACT
-                val extractStart = System.currentTimeMillis()
-                logger.logPreInstallStart("ROOTFS_EXTRACT")
-                currentState = RootfsDeploymentState.ROOTFS_CREATING
-                _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                onProgress(0.05f, "Downloading ${targetDistro.displayName} base rootfs…")
-                onLog(">>> [DOWNLOAD] Fetching archive: ${source.url}")
-                downloadFile(source.url, tarball, onProgress, onLog)
-
-                source.expectedChecksum?.let { expected ->
-                    onProgress(0.50f, "Verifying archive checksum…")
-                    val actual = computeChecksum(tarball, source.checksumAlgorithm)
-                    if (!actual.equals(expected, ignoreCase = true)) {
-                        val errMsg = "Checksum mismatch for ${tarball.name}: expected $expected, got $actual"
-                        logger.logPreInstallFail("ROOTFS_EXTRACT", System.currentTimeMillis() - extractStart, errMsg)
-                        throw RuntimeError(environmentId, errMsg)
-                    }
-                    onLog(">>> [PASS] Archive checksum verified.")
-                }
-
-                onProgress(0.55f, "Extracting base filesystem…")
-                extractor.extract(tarball, stagingDir, source.format, source.stripComponents, onProgress, onLog)
-                currentState = RootfsDeploymentState.ROOTFS_EXTRACTED
-                _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                logger.logPreInstallSuccess("ROOTFS_EXTRACT", System.currentTimeMillis() - extractStart)
-
-                // 2. GUEST_INIT_INJECT
-                val injectStart = System.currentTimeMillis()
-                logger.logPreInstallStart("GUEST_INIT_INJECT")
-                currentState = RootfsDeploymentState.ROOTFS_CONFIGURING
-                _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                onProgress(0.60f, "Configuring base system files…")
-                configurator.configure(stagingDir, definition)
-
-                onProgress(0.65f, "Injecting LinuxDroid guest init and runtime files…")
-                runtimeSetup.setup(stagingDir)
-
-                val injectedInit = File(stagingDir, "sbin/linuxdroid-init")
-                if (!injectedInit.exists() || !injectedInit.canExecute()) {
-                    val errMsg = "Failed to inject executable /sbin/linuxdroid-init into staging rootfs"
-                    logger.logPreInstallFail("GUEST_INIT_INJECT", System.currentTimeMillis() - injectStart, errMsg)
-                    log.error("[DEPLOY_FAILED] $errMsg")
-                    onLog(">>> [FAIL] $errMsg")
-                    throw RuntimeError(environmentId, errMsg)
-                }
-                onLog(">>> [SETUP] Injected persistent guest init at ${injectedInit.path} (0755)")
-                logger.logPreInstallSuccess("GUEST_INIT_INJECT", System.currentTimeMillis() - injectStart)
-
-                // 3. PACKAGE_STAGING
-                val pkgStart = System.currentTimeMillis()
-                logger.logPreInstallStart("PACKAGE_STAGING")
-                stagePackages(stagingDir, environment, lddmDebOverride, lddeDebOverride, onLog)
-                logger.logPreInstallSuccess("PACKAGE_STAGING", System.currentTimeMillis() - pkgStart)
-
-                // 4. CONFIG_GENERATE
-                val configStart = System.currentTimeMillis()
-                logger.logPreInstallStart("CONFIG_GENERATE")
-                PostInstallScript.writeInstallConfig(
-                    rootfsDir = stagingDir,
-                    distro = targetDistro.name.lowercase(),
-                    release = definition.release,
-                    arch = environment.architecture.linuxArch,
-                    username = targetUser,
-                )
-                PostInstallScript.writeInstallSecret(stagingDir, targetPassword)
-                PostInstallScript.writeScript(stagingDir)
-                logger.logPreInstallSuccess("CONFIG_GENERATE", System.currentTimeMillis() - configStart)
-
-                // 5. BASE_VALIDATE (Stage A)
-                val valStart = System.currentTimeMillis()
-                logger.logPreInstallStart("BASE_VALIDATE")
-                onProgress(0.68f, "Validating base filesystem and guest init integrity…")
-                val extractReport = validator.validateExtraction(stagingDir, targetDistro, environment.architecture)
-                if (!extractReport.isValid) {
-                    val errMsg = "Stage A Extraction Validation failed with ${extractReport.errors.size} errors:\n${extractReport.formatSummary()}"
-                    logger.logPreInstallFail("BASE_VALIDATE", System.currentTimeMillis() - valStart, errMsg)
-                    log.error("[DEPLOY_FAILED] $errMsg")
-                    extractReport.errors.forEach { onLog(">>> [VALIDATE_FAIL] $it") }
-                    throw RuntimeError(environmentId, errMsg)
-                }
-                logger.logPreInstallSuccess("BASE_VALIDATE", System.currentTimeMillis() - valStart)
-                onLog(">>> [PASS] Stage A: Extraction validation verified base filesystem and guest init integrity.")
-
-                // 6. Promote Staging to Active
-                currentState = RootfsDeploymentState.ROOTFS_RUNTIME_READY
-                _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                onProgress(0.70f, "Promoting filesystem to active environment…")
-                val promoted = storage.promoteStagedRootfs(environmentId)
-                if (!promoted) {
-                    throw FilesystemError(finalRootfsDir.path, "Failed to promote staging rootfs to active directory")
-                }
-
-                // Stage B — Runtime Validation (active rootfs)
-                onProgress(0.72f, "Validating runtime infrastructure…")
-                if (!validator.validateRuntime(finalRootfsDir)) {
-                    throw RuntimeError(environmentId, "Stage B Runtime Validation failed: guest init or runtime dirs missing")
-                }
-                onLog(">>> [PASS] Stage B: Runtime infrastructure verified.")
-            } finally {
-                if (tarball.exists()) tarball.delete()
-                if (stagingDir.exists()) stagingDir.deleteRecursively()
-            }
-        } else {
-            // Base rootfs already exists in final directory
-            configurator.configure(finalRootfsDir, definition)
-            runtimeSetup.setup(finalRootfsDir)
-            stagePackages(finalRootfsDir, environment, lddmDebOverride, lddeDebOverride, onLog)
-            PostInstallScript.writeInstallConfig(
-                rootfsDir = finalRootfsDir,
-                distro = targetDistro.name.lowercase(),
-                release = definition.release,
-                arch = environment.architecture.linuxArch,
-                username = targetUser,
-            )
-            PostInstallScript.writeInstallSecret(finalRootfsDir, targetPassword)
-            PostInstallScript.writeScript(finalRootfsDir)
-        }
-
-        // Write PRE_INSTALL_READY marker into active rootfs
-        PostInstallScript.writePreInstallReadyMarker(
-            rootfsDir = finalRootfsDir,
-            distro = targetDistro.name.lowercase(),
-            release = definition.release,
-            username = targetUser,
-            arch = environment.architecture.linuxArch,
-        )
-
-        currentState = RootfsDeploymentState.PRE_INSTALL_READY
-        _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-        val preInstallDuration = System.currentTimeMillis() - preInstallStartTime
-        logger.logPreInstallSuccess("PRE_INSTALL", preInstallDuration)
-        logger.updateState("PRE_INSTALL_READY", phase = "PRE_INSTALL", operation = "PRE_INSTALL")
-        onLog(">>> [PREINSTALL][SUCCESS][PRE_INSTALL] Pre-install completed in ${preInstallDuration}ms. Rootfs marked PRE_INSTALL_READY.")
-
-        finalRootfsDir
-    }
-
-    /**
-     * Executes Phase 2: Post-Install.
-     * Executes entirely inside guest userspace via PRoot in CLI mode.
-     */
-    suspend fun executePostInstall(
-        environment: Environment,
-        installConfig: InstallConfig? = null,
-        lddmDebOverride: File? = null,
-        lddeDebOverride: File? = null,
         installLogger: InstallationLogger? = null,
         onProgress: suspend (Float, String) -> Unit = { _, _ -> },
         onLog: suspend (String) -> Unit = { _ -> },
@@ -365,11 +156,6 @@ class RootfsDeploymentManager(
         val targetDistro = installConfig?.distro ?: environment.distribution
         val finalRootfsDir = storage.rootfsDir(environmentId)
 
-        val preInstallMarker = File(finalRootfsDir, "etc/linuxdroid/PRE_INSTALL_READY")
-        if (!preInstallMarker.exists()) {
-            throw RuntimeError(environmentId, "Cannot run post-install: rootfs is not marked PRE_INSTALL_READY")
-        }
-
         val logger = installLogger ?: resolveInstallationLogger(
             environmentId = environmentId,
             distribution = targetDistro.name.lowercase(),
@@ -377,19 +163,26 @@ class RootfsDeploymentManager(
             architecture = environment.architecture.linuxArch,
         )
 
-        var currentState = RootfsDeploymentState.POST_INSTALL_STARTING
+        val currentState = RootfsDeploymentState.ROOTFS_PACKAGES_INSTALLING
         _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-        logger.updateState("POST_INSTALL_STARTING", phase = "POST_INSTALL")
+        logger.updateState("ROOTFS_PACKAGES_INSTALLING", phase = "CLI_PROVISIONING", operation = "CLI_PROVISIONING")
+        logger.logPostInstallStart("CLI_PROVISIONING", command = "/sbin/linuxdroid-init CLI /bin/bash /etc/linuxdroid/post-install.sh")
+        val startTime = System.currentTimeMillis()
 
-        currentState = RootfsDeploymentState.POST_INSTALLING
-        _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-        logger.updateState("POST_INSTALLING", phase = "POST_INSTALL", operation = "POST_INSTALL")
-        logger.logPostInstallStart("POST_INSTALL", command = "/sbin/linuxdroid-init CLI /bin/bash /etc/linuxdroid/post-install.sh")
-        val postInstallStartTime = System.currentTimeMillis()
+        // Write configuration and provisioning script to rootfs
+        PostInstallScript.writeInstallConfig(
+            rootfsDir = finalRootfsDir,
+            distro = targetDistro.name.lowercase(),
+            release = "latest",
+            arch = environment.architecture.linuxArch,
+            username = targetUser,
+        )
+        PostInstallScript.writeInstallSecret(finalRootfsDir, targetPassword)
+        PostInstallScript.writeScript(finalRootfsDir)
 
         if (runtimeBackend != null) {
-            onProgress(0.75f, "Executing in-guest post-install via CLI…")
-            onLog(">>> [POSTINSTALL] Starting Linux userspace in CLI mode: /sbin/linuxdroid-init CLI /bin/bash /etc/linuxdroid/post-install.sh")
+            onProgress(0.75f, "Executing in-guest CLI provisioning…")
+            onLog(">>> [CLI_PROVISIONING] Starting Linux userspace in CLI mode: /sbin/linuxdroid-init CLI /bin/bash /etc/linuxdroid/post-install.sh")
 
             val postInstallCmd = listOf("/sbin/linuxdroid-init", "CLI", "/bin/bash", "/etc/linuxdroid/post-install.sh")
             val extraEnv = mapOf(
@@ -413,51 +206,48 @@ class RootfsDeploymentManager(
                 onLog(">>> $line")
                 if (line.startsWith("[POSTINSTALL][START][") && line.endsWith("]")) {
                     val op = line.removePrefix("[POSTINSTALL][START][").removeSuffix("]")
-                    logger.updateState("POST_INSTALLING", phase = "POST_INSTALL", operation = op)
+                    logger.updateState("ROOTFS_PACKAGES_INSTALLING", phase = "CLI_PROVISIONING", operation = op)
                 }
             }
 
             val postInstallMarker = File(finalRootfsDir, "etc/linuxdroid/POST_INSTALL_COMPLETE")
             if (result.exitCode != 0 || !postInstallMarker.exists()) {
-                val dur = System.currentTimeMillis() - postInstallStartTime
-                val errMsg = "In-guest post-install failed with exit code ${result.exitCode}: ${result.stderr.ifBlank { result.stdout }}"
-                logger.logPostInstallFail("POST_INSTALL", dur, result.exitCode, result.stderr)
-                logger.updateState("POST_INSTALL_FAILED", phase = "POST_INSTALL", exitCode = result.exitCode, error = errMsg)
+                val dur = System.currentTimeMillis() - startTime
+                val errMsg = "In-guest CLI provisioning failed with exit code ${result.exitCode}: ${result.stderr.ifBlank { result.stdout }}"
+                _deploymentStates.value = _deploymentStates.value + (envKey to RootfsDeploymentState.ROOTFS_DEPLOYMENT_FAILED)
+                logger.logPostInstallFail("CLI_PROVISIONING", dur, result.exitCode, result.stderr)
+                logger.updateState("ROOTFS_DEPLOYMENT_FAILED", phase = "CLI_PROVISIONING", exitCode = result.exitCode, error = errMsg)
                 throw RuntimeError(environmentId, errMsg)
             }
         } else {
-            // Simulated post-install fallback for offline and JVM unit tests without live PRoot engine
-            executeSimulatedPostInstall(
+            // Simulated CLI provisioning fallback for offline and JVM unit tests without live PRoot engine
+            executeSimulatedCliProvisioning(
                 environment = environment,
                 finalRootfsDir = finalRootfsDir,
                 targetUser = targetUser,
                 targetPassword = targetPassword,
-                lddmDebOverride = lddmDebOverride,
-                lddeDebOverride = lddeDebOverride,
                 installLogger = logger,
                 onProgress = onProgress,
                 onLog = onLog,
             )
         }
 
-        val postInstallDuration = System.currentTimeMillis() - postInstallStartTime
+        val duration = System.currentTimeMillis() - startTime
         val postInstallMarker = File(finalRootfsDir, "etc/linuxdroid/POST_INSTALL_COMPLETE")
         if (!postInstallMarker.exists()) {
-            val errMsg = "Post-install finished without creating /etc/linuxdroid/POST_INSTALL_COMPLETE"
-            logger.logPostInstallFail("POST_INSTALL", postInstallDuration, 1, errMsg)
-            logger.updateState("POST_INSTALL_FAILED", phase = "POST_INSTALL", exitCode = 1, error = errMsg)
+            val errMsg = "CLI provisioning finished without creating /etc/linuxdroid/POST_INSTALL_COMPLETE"
+            _deploymentStates.value = _deploymentStates.value + (envKey to RootfsDeploymentState.ROOTFS_DEPLOYMENT_FAILED)
+            logger.logPostInstallFail("CLI_PROVISIONING", duration, 1, errMsg)
+            logger.updateState("ROOTFS_DEPLOYMENT_FAILED", phase = "CLI_PROVISIONING", exitCode = 1, error = errMsg)
             throw RuntimeError(environmentId, errMsg)
         }
 
-        currentState = RootfsDeploymentState.POST_INSTALL_COMPLETE
-        _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-        logger.logPostInstallSuccess("POST_INSTALL", postInstallDuration, 0)
-        logger.updateState("POST_INSTALL_COMPLETE", phase = "POST_INSTALL")
-        onLog(">>> [POSTINSTALL][SUCCESS][POST_INSTALL] Post-install completed in ${postInstallDuration}ms.")
+        logger.logPostInstallSuccess("CLI_PROVISIONING", duration, 0)
+        onLog(">>> [CLI_PROVISIONING][SUCCESS] CLI provisioning completed in ${duration}ms.")
     }
 
     /**
-     * Executes the complete two-phase rootfs deployment pipeline.
+     * Executes the complete CLI rootfs deployment pipeline.
      */
     suspend fun deployRootfs(
         environment: Environment,
@@ -476,10 +266,10 @@ class RootfsDeploymentManager(
             val targetDistro = installConfig?.distro ?: environment.distribution
             val requestedRelease = installConfig?.release
 
-            log.info("[DEPLOY_START] Beginning rootfs deployment pipeline for $environmentId (${targetDistro.displayName}, user=$targetUser)")
-            onLog(">>> [DEPLOY_START] Initializing rootfs deployment for ${environment.name} (${targetDistro.displayName})")
+            log.info("[DEPLOY_START] Beginning CLI rootfs deployment pipeline for $environmentId (${targetDistro.displayName}, user=$targetUser)")
+            onLog(">>> [DEPLOY_START] Initializing CLI rootfs deployment for ${environment.name} (${targetDistro.displayName})")
 
-            // Check if existing environment is already complete and valid
+            // Check if existing environment is already complete and valid for CLI
             if (storage.verifyRootfs(environmentId)) {
                 val existingRootfs = storage.rootfsDir(environmentId)
                 val existingReport = if (installConfig != null) {
@@ -488,17 +278,18 @@ class RootfsDeploymentManager(
                         targetDistro,
                         environment.architecture,
                         username = targetUser,
+                        requireGraphicalStack = false,
                     )
                 } else {
                     validator.validate(
                         existingRootfs,
                         targetDistro,
                         environment.architecture,
-                        requireGraphicalStack = true,
+                        requireGraphicalStack = false,
                     )
                 }
                 if (existingReport.isValid) {
-                    log.info("[DEPLOY_READY] Existing rootfs already contains complete, verified graphical stack. Skipping deployment.")
+                    log.info("[DEPLOY_READY] Existing rootfs already contains complete, verified CLI stack. Skipping deployment.")
                     onLog(">>> [DEPLOY_READY] Complete verified graphical stack found in ${existingRootfs.path}.")
                     onProgress(1.0f, "Rootfs already installed and verified")
                     _deploymentStates.value = _deploymentStates.value + (envKey to RootfsDeploymentState.ROOTFS_READY)
@@ -510,7 +301,7 @@ class RootfsDeploymentManager(
                         westonVersion = "distribution",
                         waylandVersion = "distribution",
                         validationReport = existingReport,
-                        detail = "Existing verified rootfs reused",
+                        detail = "Existing verified CLI rootfs reused",
                     )
                 } else {
                     log.warn("[DEPLOY_PARTIAL] Existing rootfs incomplete or invalid: ${existingReport.errors}")
@@ -520,8 +311,12 @@ class RootfsDeploymentManager(
 
             storage.initializeEnvironmentDirs(environmentId)
             val finalRootfsDir = storage.rootfsDir(environmentId)
+            val tmpDir = storage.tmpDir(environmentId)
+            val stagingDir = storage.stagingRootfsDir(environmentId)
+
             val baseDefinition = DistributionCatalog.getDefinition(targetDistro, environment.architecture, requestedRelease)
             val definition = dynamicResolver.resolveLatest(baseDefinition, onLog)
+            val source = definition.source
 
             val installLogger = resolveInstallationLogger(
                 environmentId = environmentId,
@@ -537,42 +332,117 @@ class RootfsDeploymentManager(
                 )
             )
 
-            var currentState = RootfsDeploymentState.PRE_INSTALLING
+            var currentState = RootfsDeploymentState.ROOTFS_CREATING
             _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
 
+            val needsExtract = !finalRootfsDir.exists() || !File(finalRootfsDir, "bin/sh").exists()
+
             try {
-                // 1. Phase 1: Pre-Install (Host side)
-                executePreInstall(
+                if (needsExtract) {
+                    if (stagingDir.exists()) stagingDir.deleteRecursively()
+                    stagingDir.mkdirs()
+
+                    val archiveExt = when (source.format) {
+                        ArchiveFormat.TAR_XZ -> "tar.xz"
+                        ArchiveFormat.TAR_GZ -> "tar.gz"
+                        ArchiveFormat.TAR_BZ2 -> "tar.bz2"
+                    }
+                    val tarball = File(tmpDir, "rootfs.$archiveExt")
+
+                    try {
+                        // 1. Download archive
+                        onProgress(0.05f, "Downloading ${targetDistro.displayName} base rootfs…")
+                        onLog(">>> [DOWNLOAD] Fetching archive: ${source.url}")
+                        downloadFile(source.url, tarball, onProgress, onLog)
+
+                        source.expectedChecksum?.let { expected ->
+                            onProgress(0.50f, "Verifying archive checksum…")
+                            val actual = computeChecksum(tarball, source.checksumAlgorithm)
+                            if (!actual.equals(expected, ignoreCase = true)) {
+                                val errMsg = "Checksum mismatch for ${tarball.name}: expected $expected, got $actual"
+                                throw RuntimeError(environmentId, errMsg)
+                            }
+                            onLog(">>> [PASS] Archive checksum verified.")
+                        }
+
+                        // 2. Extract archive
+                        onProgress(0.55f, "Extracting base filesystem…")
+                        extractor.extract(tarball, stagingDir, source.format, source.stripComponents, onProgress, onLog)
+                        currentState = RootfsDeploymentState.ROOTFS_EXTRACTED
+                        _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
+
+                        // 3. Configure system files and inject guest init
+                        currentState = RootfsDeploymentState.ROOTFS_CONFIGURING
+                        _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
+                        onProgress(0.60f, "Configuring base system files…")
+                        configurator.configure(stagingDir, definition)
+
+                        onProgress(0.65f, "Injecting LinuxDroid guest init and runtime files…")
+                        runtimeSetup.setup(stagingDir)
+
+                        val injectedInit = File(stagingDir, "sbin/linuxdroid-init")
+                        if (!injectedInit.exists() || !injectedInit.canExecute()) {
+                            val errMsg = "Failed to inject executable /sbin/linuxdroid-init into staging rootfs"
+                            log.error("[DEPLOY_FAILED] $errMsg")
+                            throw RuntimeError(environmentId, errMsg)
+                        }
+                        onLog(">>> [SETUP] Injected persistent guest init at ${injectedInit.path} (0755)")
+
+                        // 4. Validate extraction (Stage A)
+                        onProgress(0.68f, "Validating base filesystem and guest init integrity…")
+                        val extractReport = validator.validateExtraction(stagingDir, targetDistro, environment.architecture)
+                        if (!extractReport.isValid) {
+                            val errMsg = "Stage A Extraction Validation failed with ${extractReport.errors.size} errors:\n${extractReport.formatSummary()}"
+                            log.error("[DEPLOY_FAILED] $errMsg")
+                            extractReport.errors.forEach { onLog(">>> [VALIDATE_FAIL] $it") }
+                            throw RuntimeError(environmentId, errMsg)
+                        }
+                        onLog(">>> [PASS] Stage A: Extraction validation verified base filesystem and guest init integrity.")
+
+                        // 5. Promote staging to active
+                        currentState = RootfsDeploymentState.ROOTFS_RUNTIME_READY
+                        _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
+                        onProgress(0.70f, "Promoting filesystem to active environment…")
+                        val promoted = storage.promoteStagedRootfs(environmentId)
+                        if (!promoted) {
+                            throw FilesystemError(finalRootfsDir.path, "Failed to promote staging rootfs to active directory")
+                        }
+
+                        // Validate runtime infrastructure (Stage B)
+                        onProgress(0.72f, "Validating runtime infrastructure…")
+                        if (!validator.validateRuntime(finalRootfsDir)) {
+                            throw RuntimeError(environmentId, "Stage B Runtime Validation failed: guest init or runtime dirs missing")
+                        }
+                        onLog(">>> [PASS] Stage B: Runtime infrastructure verified.")
+                    } finally {
+                        if (tarball.exists()) tarball.delete()
+                        if (stagingDir.exists()) stagingDir.deleteRecursively()
+                    }
+                } else {
+                    configurator.configure(finalRootfsDir, definition)
+                    runtimeSetup.setup(finalRootfsDir)
+                }
+
+                // 6. Execute in-guest CLI provisioning
+                executeCliProvisioning(
                     environment = environment,
                     installConfig = installConfig,
-                    lddmDebOverride = lddmDebOverride,
-                    lddeDebOverride = lddeDebOverride,
                     installLogger = installLogger,
                     onProgress = onProgress,
                     onLog = onLog,
                 )
 
-                // 2. Phase 2: Post-Install (In-Guest Userspace CLI)
-                executePostInstall(
-                    environment = environment,
-                    installConfig = installConfig,
-                    lddmDebOverride = lddmDebOverride,
-                    lddeDebOverride = lddeDebOverride,
-                    installLogger = installLogger,
-                    onProgress = onProgress,
-                    onLog = onLog,
-                )
-
-                // 3. Stage D — Final Rootfs Validation (checks installed artifacts on disk without GUI)
+                // 7. Final validation (Stage D, CLI only)
                 currentState = RootfsDeploymentState.ROOTFS_VALIDATING
                 _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
                 onProgress(0.96f, "Performing final rootfs validation…")
-                onLog(">>> [VALIDATE] Performing Stage D full rootfs validation across all components...")
+                onLog(">>> [VALIDATE] Performing Stage D CLI rootfs validation...")
                 val report = validator.validateFinal(
                     finalRootfsDir,
                     targetDistro,
                     environment.architecture,
                     username = targetUser,
+                    requireGraphicalStack = false,
                 )
 
                 if (!report.isValid) {
@@ -581,19 +451,35 @@ class RootfsDeploymentManager(
                     report.errors.forEach { onLog(">>> [VALIDATE_FAIL] $it") }
                     throw RuntimeError(environmentId, errMsg)
                 }
-                onLog(">>> [PASS] Stage D: Final rootfs validation succeeded across all components.")
+                onLog(">>> [PASS] Stage D: Final CLI rootfs validation succeeded.")
 
-                // 4. Mark INSTALLATION_COMPLETE and ROOTFS_READY
-                currentState = RootfsDeploymentState.INSTALLATION_COMPLETE
-                _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                installLogger.updateState("INSTALLATION_COMPLETE", phase = "COMPLETION")
+                // Optional: If GUI deb overrides were explicitly passed to deployRootfs, install them now
+                var lddmVersion: String? = null
+                var lddeVersion: String? = null
+                var westonVersion: String? = null
+                var waylandVersion: String? = null
 
+                if (lddmDebOverride != null || lddeDebOverride != null) {
+                    try {
+                        onProgress(0.97f, "Installing optional GUI packages…")
+                        val graphicsResult = graphicalInstaller.ensureGraphicalDependencies(environment, finalRootfsDir, onProgress, onLog)
+                        graphicalInstaller.ensureWestonConfig(finalRootfsDir)
+                        val lddmResult = packageInstaller.installLDDM(environment, finalRootfsDir, lddmDebOverride, onProgress, onLog)
+                        val lddeResult = packageInstaller.installLDDE(environment, finalRootfsDir, lddeDebOverride, onProgress, onLog)
+                        lddmVersion = lddmResult.installedVersion
+                        lddeVersion = lddeResult.installedVersion
+                        westonVersion = graphicsResult.westonVersion
+                        waylandVersion = graphicsResult.waylandVersion
+                        GuiInstallScript.writeGuiInstallCompleteMarker(finalRootfsDir)
+                    } catch (e: Exception) {
+                        log.warn("[DEPLOY_GUI_WARN] Optional GUI installation failed (CLI foundation preserved): ${e.message}")
+                    }
+                }
+
+                // 8. Record manifest and ROOTFS_READY
                 currentState = RootfsDeploymentState.ROOTFS_READY
                 _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
                 installLogger.updateState("ROOTFS_READY", phase = "COMPLETION")
-
-                val lddmVer = packageInstaller.getInstalledPackageVersion(finalRootfsDir, "linuxdroid-display-manager") ?: "1.0.0"
-                val lddeVer = packageInstaller.getInstalledPackageVersion(finalRootfsDir, "linuxdroid-desktop-environment") ?: "1.0.0"
 
                 val metadata = RootfsMetadata(
                     distribution = targetDistro.name.lowercase(),
@@ -607,14 +493,19 @@ class RootfsDeploymentManager(
                     bootstrapVersion = "1.0.0",
                     status = "ready",
                     deploymentState = RootfsDeploymentState.ROOTFS_READY.name,
-                    lddmVersion = lddmVer,
-                    lddeVersion = lddeVer,
-                    westonVersion = "distribution",
-                    waylandVersion = "distribution",
+                    lddmVersion = lddmVersion,
+                    lddeVersion = lddeVersion,
+                    westonVersion = westonVersion,
+                    waylandVersion = waylandVersion,
                     installedAt = System.currentTimeMillis(),
                 )
                 val metadataFile = File(storage.metadataDir(environmentId), "rootfs-manifest.json")
                 storage.writeAtomic(metadataFile, json.encodeToString(metadata))
+
+                // Initialize persistent GUI state marker
+                val guiStateFile = File(storage.metadataDir(environmentId), "gui-state")
+                val finalGuiState = if (lddmVersion != null && lddeVersion != null) "INSTALLED" else "NOT_INSTALLED"
+                runCatching { storage.writeAtomic(guiStateFile, "$finalGuiState\n") }
 
                 PostInstallScript.writeRootfsReadyMarker(
                     rootfsDir = finalRootfsDir,
@@ -625,18 +516,18 @@ class RootfsDeploymentManager(
                 )
 
                 log.info("[DEPLOY_READY] Recorded manifest and ROOTFS_READY marker at ${metadataFile.path}")
-                onProgress(1.0f, "${targetDistro.displayName} environment ready")
-                onLog(">>> [SUCCESS] Complete rootfs environment is ready!")
+                onProgress(1.0f, "${targetDistro.displayName} CLI environment ready")
+                onLog(">>> [SUCCESS] Complete CLI rootfs environment is ready!")
 
                 RootfsDeploymentResult(
                     environmentId = environmentId,
                     state = RootfsDeploymentState.ROOTFS_READY,
-                    lddmVersion = lddmVer,
-                    lddeVersion = lddeVer,
-                    westonVersion = "distribution",
-                    waylandVersion = "distribution",
+                    lddmVersion = lddmVersion,
+                    lddeVersion = lddeVersion,
+                    westonVersion = westonVersion,
+                    waylandVersion = waylandVersion,
                     validationReport = report,
-                    detail = "Rootfs deployment succeeded",
+                    detail = "CLI rootfs deployment succeeded",
                 )
             } catch (e: Exception) {
                 log.error("[DEPLOY_FAILED] Deployment failed for $environmentId: ${e.message}", e)
@@ -652,50 +543,17 @@ class RootfsDeploymentManager(
         }
     }
 
-    private fun stagePackages(
-        rootfsDir: File,
-        environment: Environment,
-        lddmDebOverride: File?,
-        lddeDebOverride: File?,
-        onLog: suspend (String) -> Unit,
-    ) {
-        val packagesDir = File(rootfsDir, "root/.linuxdroid/packages").apply { mkdirs() }
-        val lddmDeb = lddmDebOverride ?: packageInstaller.resolvePackageDeb("linuxdroid-display-manager", environment)
-        if (lddmDeb != null && lddmDeb.exists()) {
-            val dest1 = File(packagesDir, "linuxdroid-display-manager.deb")
-            val dest2 = File(packagesDir, "LDDM.deb")
-            lddmDeb.copyTo(dest1, overwrite = true)
-            lddmDeb.copyTo(dest2, overwrite = true)
-            dest1.setReadable(true, false)
-            dest2.setReadable(true, false)
-        }
-        val lddeDeb = lddeDebOverride ?: packageInstaller.resolvePackageDeb("linuxdroid-desktop-environment", environment)
-        if (lddeDeb != null && lddeDeb.exists()) {
-            val dest1 = File(packagesDir, "linuxdroid-desktop-environment.deb")
-            val dest2 = File(packagesDir, "LDDE.deb")
-            lddeDeb.copyTo(dest1, overwrite = true)
-            lddeDeb.copyTo(dest2, overwrite = true)
-            dest1.setReadable(true, false)
-            dest2.setReadable(true, false)
-        }
-    }
-
-    private suspend fun executeSimulatedPostInstall(
+    private suspend fun executeSimulatedCliProvisioning(
         environment: Environment,
         finalRootfsDir: File,
         targetUser: String,
         targetPassword: String,
-        lddmDebOverride: File?,
-        lddeDebOverride: File?,
         installLogger: InstallationLogger,
         onProgress: suspend (Float, String) -> Unit,
         onLog: suspend (String) -> Unit,
     ) {
         installLogger.logPostInstallStart("READ_INSTALL_CONFIG")
         installLogger.logPostInstallSuccess("READ_INSTALL_CONFIG", 5, 0)
-
-        installLogger.logPostInstallStart("VALIDATE_STAGED_DEBS")
-        installLogger.logPostInstallSuccess("VALIDATE_STAGED_DEBS", 5, 0)
 
         installLogger.logPostInstallStart("APT_UPDATE", command = "apt-get update")
         installLogger.logPostInstallSuccess("APT_UPDATE", 50, 0)
@@ -704,33 +562,6 @@ class RootfsDeploymentManager(
         onProgress(0.75f, "Installing standard Linux packages…")
         standardPackageInstaller.installStandardPackages(environment, finalRootfsDir, onProgress, onLog)
         installLogger.logPostInstallSuccess("INSTALL_CORE_PACKAGES", 100, 0)
-
-        installLogger.logPostInstallStart("INSTALL_GRAPHICS_PACKAGES", command = "apt-get install -y <graphics_packages>")
-        onProgress(0.80f, "Ensuring Wayland and Weston packages…")
-        graphicalInstaller.ensureGraphicalDependencies(environment, finalRootfsDir, onProgress, onLog)
-        installLogger.logPostInstallSuccess("INSTALL_GRAPHICS_PACKAGES", 100, 0)
-
-        installLogger.logPostInstallStart("INSTALL_LDDM", command = "apt-get install -y linuxdroid-display-manager.deb")
-        onProgress(0.84f, "Installing LDDM display manager…")
-        packageInstaller.installLDDM(environment, finalRootfsDir, lddmDebOverride, onProgress, onLog)
-        installLogger.logPostInstallSuccess("INSTALL_LDDM", 100, 0)
-
-        installLogger.logPostInstallStart("INSTALL_LDDE", command = "apt-get install -y linuxdroid-desktop-environment.deb")
-        onProgress(0.87f, "Installing LDDE desktop environment…")
-        packageInstaller.installLDDE(environment, finalRootfsDir, lddeDebOverride, onProgress, onLog)
-        installLogger.logPostInstallSuccess("INSTALL_LDDE", 100, 0)
-
-        // Write default LDDM and LDDE configurations if missing (matching PostInstallScript)
-        val lddmConf = File(finalRootfsDir, "etc/linuxdroid/lddm.conf")
-        if (!lddmConf.exists()) {
-            lddmConf.parentFile?.mkdirs()
-            lddmConf.writeText("[lddm]\nweston_socket=wayland-0\nsession_user=$targetUser\nautostart=true\n")
-        }
-        val desktopConf = File(finalRootfsDir, "etc/linuxdroid/desktop.conf")
-        if (!desktopConf.exists()) {
-            desktopConf.parentFile?.mkdirs()
-            desktopConf.writeText("[desktop]\nshell=default\ntheme=default\n")
-        }
 
         installLogger.logPostInstallStart("CREATE_USER", command = "useradd -m -s /usr/bin/zsh $targetUser")
         installLogger.logPostInstallStart("CONFIGURE_PASSWORD", command = "chpasswd [REDACTED]")
@@ -758,15 +589,12 @@ class RootfsDeploymentManager(
         installLogger.logPostInstallSuccess("APT_CLEAN", 20, 0)
         installLogger.logPostInstallStart("APT_UPDATE_FINAL", command = "apt-get update")
         installLogger.logPostInstallSuccess("APT_UPDATE_FINAL", 50, 0)
-        executeAptCleanup(environment, finalRootfsDir, onLog)
 
         installLogger.logPostInstallStart("FINAL_VALIDATION")
         installLogger.logPostInstallSuccess("FINAL_VALIDATION", 10, 0)
 
         val secretFile = File(finalRootfsDir, "etc/linuxdroid/.install.secret")
         if (secretFile.exists()) secretFile.delete()
-        val stagedPkgs = File(finalRootfsDir, "root/.linuxdroid/packages")
-        if (stagedPkgs.exists()) stagedPkgs.deleteRecursively()
 
         PostInstallScript.writePostInstallCompleteMarker(
             rootfsDir = finalRootfsDir,
@@ -776,60 +604,6 @@ class RootfsDeploymentManager(
             arch = environment.architecture.linuxArch,
         )
         onLog(">>> POST_INSTALL_COMPLETE")
-    }
-
-    private suspend fun executeAptCleanup(
-        environment: Environment,
-        rootfsDir: File,
-        onLog: suspend (String) -> Unit,
-    ) {
-        val backend = runtimeBackend ?: return
-        val extraEnv = mapOf(
-            "DEBIAN_FRONTEND" to "noninteractive",
-            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        )
-
-        // 1. apt-get autoremove --purge -y
-        onLog(">>> [CLEANUP] 1/3: apt-get autoremove --purge -y")
-        try {
-            backend.executeAndWait(
-                environment = environment.copy(rootfsPath = rootfsDir.absolutePath),
-                command = listOf("apt-get", "autoremove", "--purge", "-y"),
-                workingDirectory = "/root",
-                extraEnv = extraEnv,
-                timeoutMs = 60_000,
-            )
-        } catch (e: Exception) {
-            log.warn("[CLEANUP] autoremove warning: ${e.message}")
-        }
-
-        // 2. apt-get clean
-        onLog(">>> [CLEANUP] 2/3: apt-get clean")
-        try {
-            backend.executeAndWait(
-                environment = environment.copy(rootfsPath = rootfsDir.absolutePath),
-                command = listOf("apt-get", "clean"),
-                workingDirectory = "/root",
-                extraEnv = extraEnv,
-                timeoutMs = 30_000,
-            )
-        } catch (e: Exception) {
-            log.warn("[CLEANUP] clean warning: ${e.message}")
-        }
-
-        // 3. apt-get update
-        onLog(">>> [CLEANUP] 3/3: apt-get update")
-        try {
-            backend.executeAndWait(
-                environment = environment.copy(rootfsPath = rootfsDir.absolutePath),
-                command = listOf("apt-get", "update"),
-                workingDirectory = "/root",
-                extraEnv = extraEnv,
-                timeoutMs = 60_000,
-            )
-        } catch (e: Exception) {
-            log.warn("[CLEANUP] update warning: ${e.message}")
-        }
     }
 
     private suspend fun downloadFile(

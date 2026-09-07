@@ -19,6 +19,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
 
 sealed class DistributionFetchState {
@@ -39,6 +40,7 @@ class EnvironmentViewModel @Inject constructor(
     private val storage: EnvironmentStorage,
     private val runtimeBackend: RuntimeBackend,
     private val bootstrapper: RootfsBootstrapper,
+    private val guiInstaller: com.linuxdroid.linux.bootstrap.GuiInstaller,
     private val sessionManager: SessionManager,
 ) : ViewModel() {
 
@@ -59,6 +61,15 @@ class EnvironmentViewModel @Inject constructor(
 
     private val _installerLogs = MutableStateFlow<Map<String, List<String>>>(emptyMap())
     val installerLogs: StateFlow<Map<String, List<String>>> = _installerLogs.asStateFlow()
+
+    private val _guiStates = MutableStateFlow<Map<String, GuiState>>(emptyMap())
+    val guiStates: StateFlow<Map<String, GuiState>> = _guiStates.asStateFlow()
+
+    private val _guiInstallProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
+    val guiInstallProgress: StateFlow<Map<String, Float>> = _guiInstallProgress.asStateFlow()
+
+    private val _guiInstallLogs = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    val guiInstallLogs: StateFlow<Map<String, List<String>>> = _guiInstallLogs.asStateFlow()
 
     private val _errorMessage = MutableSharedFlow<String>(extraBufferCapacity = 16)
     val errorMessage: SharedFlow<String> = _errorMessage.asSharedFlow()
@@ -301,13 +312,39 @@ class EnvironmentViewModel @Inject constructor(
                 log.info("Environment $envId is now RUNNING (startMode=${startMode.name})")
             } catch (e: Exception) {
                 log.error("Failed to start environment $envId in ${startMode.name} mode", e)
-                dao.updateState(
-                    id = envId,
-                    state = EnvironmentState.FAILED.name,
-                    timestamp = System.currentTimeMillis(),
-                    failureMessage = e.message ?: "Startup failed",
-                )
-                _errorMessage.tryEmit("Failed to start: ${e.message}")
+                if (startMode == StartMode.GUI && (e is GuiNotInstalledError || e is GuiInstallFailedError || e is GuiValidationFailedError || e is GuiInstallInProgressError)) {
+                    dao.updateState(
+                        id = envId,
+                        state = EnvironmentState.READY.name,
+                        timestamp = System.currentTimeMillis(),
+                        failureMessage = null,
+                    )
+                    when (e) {
+                        is GuiNotInstalledError -> {
+                            _guiStates.update { it + (envId to GuiState.NOT_INSTALLED) }
+                            _errorMessage.tryEmit("GUI is not installed. Tap 'Install GUI' to set up the desktop.")
+                        }
+                        is GuiInstallFailedError -> {
+                            _guiStates.update { it + (envId to GuiState.FAILED) }
+                            _errorMessage.tryEmit("GUI installation failed: ${e.reason}. Tap 'Repair GUI' or view logs.")
+                        }
+                        is GuiValidationFailedError -> {
+                            _guiStates.update { it + (envId to GuiState.FAILED) }
+                            _errorMessage.tryEmit("GUI validation failed: ${e.details}. Tap 'Repair GUI' to fix.")
+                        }
+                        is GuiInstallInProgressError -> {
+                            _errorMessage.tryEmit("GUI installation is in progress. Please wait.")
+                        }
+                    }
+                } else {
+                    dao.updateState(
+                        id = envId,
+                        state = EnvironmentState.FAILED.name,
+                        timestamp = System.currentTimeMillis(),
+                        failureMessage = e.message ?: "Startup failed",
+                    )
+                    _errorMessage.tryEmit("Failed to start: ${e.message}")
+                }
             }
         }
     }
@@ -405,16 +442,120 @@ class EnvironmentViewModel @Inject constructor(
                 log.info("Environment $envId restarted and is RUNNING (startMode=${startMode.name})")
             } catch (e: Exception) {
                 log.error("Failed to restart environment $envId", e)
-                dao.updateState(
-                    id = envId,
-                    state = EnvironmentState.FAILED.name,
-                    timestamp = System.currentTimeMillis(),
-                    failureMessage = e.message ?: "Restart failed",
-                )
-                _errorMessage.tryEmit("Failed to restart: ${e.message}")
+                if (startMode == StartMode.GUI && (e is GuiNotInstalledError || e is GuiInstallFailedError || e is GuiValidationFailedError || e is GuiInstallInProgressError)) {
+                    dao.updateState(
+                        id = envId,
+                        state = EnvironmentState.READY.name,
+                        timestamp = System.currentTimeMillis(),
+                        failureMessage = null,
+                    )
+                    when (e) {
+                        is GuiNotInstalledError -> {
+                            _guiStates.update { it + (envId to GuiState.NOT_INSTALLED) }
+                            _errorMessage.tryEmit("GUI is not installed. Tap 'Install GUI' to set up the desktop.")
+                        }
+                        is GuiInstallFailedError -> {
+                            _guiStates.update { it + (envId to GuiState.FAILED) }
+                            _errorMessage.tryEmit("GUI installation failed: ${e.reason}. Tap 'Repair GUI' or view logs.")
+                        }
+                        is GuiValidationFailedError -> {
+                            _guiStates.update { it + (envId to GuiState.FAILED) }
+                            _errorMessage.tryEmit("GUI validation failed: ${e.details}. Tap 'Repair GUI' to fix.")
+                        }
+                        is GuiInstallInProgressError -> {
+                            _errorMessage.tryEmit("GUI installation is in progress. Please wait.")
+                        }
+                    }
+                } else {
+                    dao.updateState(
+                        id = envId,
+                        state = EnvironmentState.FAILED.name,
+                        timestamp = System.currentTimeMillis(),
+                        failureMessage = e.message ?: "Restart failed",
+                    )
+                    _errorMessage.tryEmit("Failed to restart: ${e.message}")
+                }
             }
         }
     }
+
+    fun getGuiState(environment: Environment): GuiState {
+        val cached = _guiStates.value[environment.id.value]
+        if (cached != null) return cached
+        val status = guiInstaller.checkStatus(environment)
+        _guiStates.update { it + (environment.id.value to status) }
+        return status
+    }
+
+    fun installGui(environment: Environment) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val envId = environment.id.value
+            try {
+                _guiStates.update { it + (envId to GuiState.INSTALLING) }
+                _guiInstallProgress.update { it + (envId to 0.05f) }
+                _guiInstallLogs.update { it + (envId to listOf("Starting GUI installation for ${environment.name}...")) }
+
+                val result = guiInstaller.install(
+                    environment = environment,
+                    onProgress = { progress, _ ->
+                        _guiInstallProgress.update { it + (envId to progress) }
+                    },
+                    onLog = { logLine ->
+                        _guiInstallLogs.update { current ->
+                            val list = (current[envId] ?: emptyList()) + logLine
+                            current + (envId to list.takeLast(500))
+                        }
+                    },
+                )
+                _guiStates.update { it + (envId to result) }
+                if (result == GuiState.INSTALLED) {
+                    _errorMessage.tryEmit("GUI installed successfully!")
+                } else {
+                    _errorMessage.tryEmit("GUI installation failed. Check logs for details.")
+                }
+            } catch (e: Exception) {
+                log.error("Exception in installGui for $envId", e)
+                _guiStates.update { it + (envId to GuiState.FAILED) }
+                _errorMessage.tryEmit("GUI installation error: ${e.message}")
+            }
+        }
+    }
+
+    fun repairGui(environment: Environment) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val envId = environment.id.value
+            try {
+                _guiStates.update { it + (envId to GuiState.REPAIRING) }
+                _guiInstallProgress.update { it + (envId to 0.1f) }
+                _guiInstallLogs.update { it + (envId to listOf("Repairing GUI for ${environment.name}...")) }
+
+                val result = guiInstaller.repair(
+                    environment = environment,
+                    onProgress = { progress, _ ->
+                        _guiInstallProgress.update { it + (envId to progress) }
+                    },
+                    onLog = { logLine ->
+                        _guiInstallLogs.update { current ->
+                            val list = (current[envId] ?: emptyList()) + logLine
+                            current + (envId to list.takeLast(500))
+                        }
+                    },
+                )
+                _guiStates.update { it + (envId to result) }
+                if (result == GuiState.INSTALLED) {
+                    _errorMessage.tryEmit("GUI repaired successfully!")
+                } else {
+                    _errorMessage.tryEmit("GUI repair failed. Check logs for details.")
+                }
+            } catch (e: Exception) {
+                log.error("Exception in repairGui for $envId", e)
+                _guiStates.update { it + (envId to GuiState.FAILED) }
+                _errorMessage.tryEmit("GUI repair error: ${e.message}")
+            }
+        }
+    }
+
+    fun getGuiInstallLog(environment: Environment): File? = guiInstaller.getLog(environment)
 
     fun updateConfiguration(environment: Environment, config: EnvironmentConfiguration) {
         viewModelScope.launch(Dispatchers.IO) {

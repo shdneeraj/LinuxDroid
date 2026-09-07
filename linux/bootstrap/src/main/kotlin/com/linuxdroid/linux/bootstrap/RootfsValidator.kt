@@ -458,13 +458,14 @@ class RootfsValidator(
         distribution: Distribution,
         architecture: Architecture = Architecture.ARM64,
         username: String? = null,
+        requireGraphicalStack: Boolean = false,
     ): RootfsValidationReport {
-        log.info("[STAGE_D] Executing Final Rootfs Validation (all components, user=$username)")
+        log.info("[STAGE_D] Executing Final Rootfs Validation (user=$username, graphicalStack=$requireGraphicalStack)")
         return validate(
             rootfsDir = rootfsDir,
             distribution = distribution,
             architecture = architecture,
-            requireGraphicalStack = true,
+            requireGraphicalStack = requireGraphicalStack,
             username = username,
         )
     }

@@ -268,6 +268,10 @@ data class Environment(
     val lastStateChangeAt: Long = System.currentTimeMillis(),
     /** Error message if state == FAILED. */
     val failureMessage: String? = null,
+    /** Installation state of the optional GUI layer. Never invalidates the CLI environment. */
+    val guiState: GuiState = GuiState.NOT_INSTALLED,
+    /** Last GUI installation or repair failure message. Null if no failure has occurred. */
+    val guiFailureMessage: String? = null,
 ) {
     val id: EnvironmentId get() = metadata.id
     val name: String get() = metadata.name
@@ -299,6 +303,21 @@ data class Environment(
             failureMessage = if (newState == EnvironmentState.FAILED) failureMessage else null,
         )
     }
+
+    /**
+     * Returns a copy of this environment with the new GUI state applied.
+     * Does not affect the CLI [state] — a GUI state change never invalidates the Linux environment.
+     *
+     * @param newGuiState The new GUI installation state.
+     * @param guiFailureMessage Optional failure message when [newGuiState] is [GuiState.FAILED].
+     */
+    fun withGuiState(
+        newGuiState: GuiState,
+        guiFailureMessage: String? = null,
+    ): Environment = copy(
+        guiState = newGuiState,
+        guiFailureMessage = if (newGuiState == GuiState.FAILED) guiFailureMessage else null,
+    )
 }
 
 /**

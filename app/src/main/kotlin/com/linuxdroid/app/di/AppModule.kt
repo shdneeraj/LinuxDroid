@@ -170,6 +170,18 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideGuiInstaller(
+        @ApplicationContext context: Context,
+        storage: EnvironmentStorage,
+        runtime: RuntimeBackend,
+    ): com.linuxdroid.linux.bootstrap.GuiInstaller = com.linuxdroid.linux.bootstrap.GuiInstaller(
+        context = context,
+        storage = storage,
+        runtimeBackend = runtime,
+    )
+
+    @Provides
+    @Singleton
     fun provideProcessManager(): ProcessManager = DefaultProcessManager()
 
     @Provides

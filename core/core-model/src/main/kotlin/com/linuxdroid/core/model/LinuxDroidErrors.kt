@@ -142,3 +142,49 @@ class GuestInitError(
     cause: Throwable? = null,
 ) : LinuxDroidError("[GUEST-INIT] ${code.name}: $detail", cause)
 
+// ─── GUI Installation ─────────────────────────────────────────────────────────
+
+/**
+ * Thrown when a GUI session is requested but the GUI is not installed.
+ * The CLI environment remains fully operational.
+ */
+class GuiNotInstalledError(
+    val environmentId: EnvironmentId,
+) : LinuxDroidError(
+    "[GUI] GUI is not installed for environment $environmentId. " +
+        "Use GuiInstaller.install() to set up the graphical layer."
+)
+
+/**
+ * Thrown when a GUI session is requested but the last GUI installation failed.
+ * The CLI environment remains fully operational.
+ */
+class GuiInstallFailedError(
+    val environmentId: EnvironmentId,
+    val reason: String,
+) : LinuxDroidError(
+    "[GUI] GUI installation previously failed for environment $environmentId: $reason. " +
+        "Use GuiInstaller.install() to retry or GuiInstaller.repair() to repair."
+)
+
+/**
+ * Thrown when a GUI session is requested but installation is still in progress.
+ */
+class GuiInstallInProgressError(
+    val environmentId: EnvironmentId,
+) : LinuxDroidError(
+    "[GUI] GUI installation is in progress for environment $environmentId. " +
+        "Wait for installation to complete before starting a GUI session."
+)
+
+/**
+ * Thrown when GUI state marker shows INSTALLED but validation reveals broken components.
+ * Triggers repair flow. The CLI environment remains fully operational.
+ */
+class GuiValidationFailedError(
+    val environmentId: EnvironmentId,
+    val details: String,
+) : LinuxDroidError(
+    "[GUI] GUI validation failed for environment $environmentId: $details. " +
+        "Use GuiInstaller.repair() to repair missing components."
+)

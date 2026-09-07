@@ -81,6 +81,19 @@ class DefaultSessionManagerModeTest {
 
     @Test
     fun `startSession with GUI mode executes LDDM and reaches GUI_READY`() = runTest {
+        // Set up mock GUI installation
+        val rootfsDir = storage.rootfsDir(environment.id)
+        val stateFile = storage.guiStateFile(environment.id)
+        stateFile.parentFile?.mkdirs()
+        stateFile.writeText("INSTALLED\n")
+        File(rootfsDir, "etc/linuxdroid").mkdirs()
+        File(rootfsDir, "etc/linuxdroid/GUI_INSTALL_COMPLETE").writeText("STATUS=COMPLETE\n")
+        File(rootfsDir, "usr/bin").mkdirs()
+        File(rootfsDir, "usr/bin/lddm").apply {
+            writeText("#!/bin/sh\n")
+            setExecutable(true)
+        }
+
         coEvery {
             runtimeBackend.executeAndWait(
                 environment = any(),
@@ -122,6 +135,24 @@ class DefaultSessionManagerModeTest {
                 sessionId = any(),
             )
         }
+    }
+
+    @Test
+    fun `startSession with GUI mode throws GuiNotInstalledError when GUI is not installed`() = runTest {
+        coEvery {
+            runtimeBackend.executeAndWait(
+                environment = any(),
+                command = any(),
+                extraEnv = any(),
+                timeoutMs = any(),
+            )
+        } returns ProcessResult(handleId = "handle-0", exitCode = 0, stdout = "Linux test 6.1.0 SHELL_ACTIVE\n", stderr = "")
+
+        val error = assertFailsWith<GuiNotInstalledError> {
+            sessionManager.startSession(environment, startMode = StartMode.GUI)
+        }
+
+        assertThat(error.environmentId).isEqualTo(environment.id)
     }
 
     @Test

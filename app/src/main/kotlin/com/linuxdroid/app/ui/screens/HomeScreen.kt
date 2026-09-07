@@ -161,6 +161,11 @@ fun HomeScreen(
                     onSettingsClick = { navController.navigate(Screen.Settings.route) }
                 )
 
+                val guiStates by environmentViewModel.guiStates.collectAsState()
+                val activeEnvGuiState = activeEnv.let { env ->
+                    guiStates[env.id.value] ?: environmentViewModel.getGuiState(env)
+                }
+
                 Text(
                     "Launch Mode",
                     style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold),
@@ -170,8 +175,13 @@ fun HomeScreen(
                 // OS / GUI Mode Primary Card
                 NeuGuiLaunchCard(
                     environment = activeEnv,
+                    guiState = activeEnvGuiState,
                     onClick = {
-                        navController.navigate(Screen.Desktop.route(activeEnv.id.value))
+                        if (activeEnvGuiState == GuiState.INSTALLED) {
+                            navController.navigate(Screen.Desktop.route(activeEnv.id.value))
+                        } else {
+                            navController.navigate(Screen.GuiInstaller.route(activeEnv.id.value))
+                        }
                     }
                 )
 
@@ -184,6 +194,15 @@ fun HomeScreen(
                     onStop = {
                         environmentViewModel.stopEnvironment(activeEnv)
                     }
+                )
+
+                // Linux Management Menu
+                LinuxManagementCard(
+                    environment = activeEnv,
+                    guiState = activeEnvGuiState,
+                    onOpenTerminal = { navController.navigate(Screen.Terminal.route(activeEnv.id.value)) },
+                    onManageGui = { navController.navigate(Screen.GuiInstaller.route(activeEnv.id.value)) },
+                    onPackageManager = { navController.navigate(Screen.PackageManager.route(activeEnv.id.value)) },
                 )
 
                 // Live System Telemetry Card (Rootfs, RAM & Storage Bars, Network, CPU, Battery)
@@ -375,9 +394,13 @@ private fun SharedStorageAccessDialog(
 /**
  * GUI Launch card with installed OS icon box, distribution info, and active session status.
  */
+/**
+ * GUI Launch card with installed OS icon box, distribution info, and active session status.
+ */
 @Composable
 private fun NeuGuiLaunchCard(
     environment: Environment,
+    guiState: GuiState,
     onClick: () -> Unit,
 ) {
     val neuColors = NeuTheme.colors
@@ -459,12 +482,24 @@ private fun NeuGuiLaunchCard(
                             0.5.dp, neuColors.borderHighlight.copy(alpha = 0.4f),
                         ),
                     ) {
+                        val badgeText = when (guiState) {
+                            GuiState.INSTALLED -> "Wayland / X11"
+                            GuiState.INSTALLING -> "Installing..."
+                            GuiState.REPAIRING -> "Repairing..."
+                            GuiState.FAILED -> "Failed (Tap to fix)"
+                            GuiState.NOT_INSTALLED -> "Not Installed"
+                        }
                         Text(
-                            text = "Wayland / X11",
+                            text = badgeText,
                             fontFamily = SfMono,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            color = neuColors.secondaryAccent,
+                            color = when (guiState) {
+                                GuiState.INSTALLED -> neuColors.secondaryAccent
+                                GuiState.FAILED -> MaterialTheme.colorScheme.error
+                                GuiState.INSTALLING, GuiState.REPAIRING -> neuColors.primaryAccent
+                                GuiState.NOT_INSTALLED -> neuColors.textSecondary
+                            },
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
                             maxLines = 1,
                         )
@@ -482,14 +517,28 @@ private fun NeuGuiLaunchCard(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
                     ) {
+                        val indicatorColor = when {
+                            isRunning -> neuColors.success
+                            guiState == GuiState.INSTALLED -> neuColors.success
+                            guiState == GuiState.FAILED -> MaterialTheme.colorScheme.error
+                            guiState == GuiState.INSTALLING || guiState == GuiState.REPAIRING -> neuColors.primaryAccent
+                            else -> neuColors.textMuted
+                        }
+                        val statusText = when {
+                            isRunning -> "Session active"
+                            guiState == GuiState.INSTALLED -> "Tap icon to launch"
+                            guiState == GuiState.FAILED -> "Tap to repair GUI"
+                            guiState == GuiState.INSTALLING || guiState == GuiState.REPAIRING -> "Installing GUI..."
+                            else -> "Tap to install GUI"
+                        }
                         Box(
                             modifier = Modifier
                                 .size(7.dp)
                                 .clip(CircleShape)
-                                .background(if (isRunning) neuColors.success else neuColors.textMuted)
+                                .background(indicatorColor)
                         )
                         Text(
-                            text = if (isRunning) "Session active" else "Tap icon to launch",
+                            text = statusText,
                             fontSize = 10.sp,
                             fontFamily = SfMono,
                             color = if (isRunning) neuColors.success else neuColors.textSecondary,
@@ -497,6 +546,94 @@ private fun NeuGuiLaunchCard(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * LinuxDroid Management card with direct access to CLI Terminal, GUI Manager, and Package Manager.
+ */
+@Composable
+private fun LinuxManagementCard(
+    environment: Environment,
+    guiState: GuiState,
+    onOpenTerminal: () -> Unit,
+    onManageGui: () -> Unit,
+    onPackageManager: () -> Unit,
+) {
+    val neuColors = NeuTheme.colors
+
+    NeuCard(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = 3.dp,
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    Icons.Default.Tune,
+                    contentDescription = null,
+                    tint = neuColors.primaryAccent,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    "LinuxDroid Management",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                    ),
+                    color = neuColors.textPrimary,
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                // Terminal Button
+                OutlinedButton(
+                    onClick = onOpenTerminal,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("CLI", fontSize = 12.sp)
+                }
+
+                // GUI Layer Button
+                OutlinedButton(
+                    onClick = onManageGui,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Icon(Icons.Default.DesktopWindows, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (guiState == GuiState.INSTALLED) "Desktop" else "GUI", fontSize = 12.sp)
+                }
+
+                // Package Manager Button
+                OutlinedButton(
+                    onClick = onPackageManager,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Icon(Icons.Default.Extension, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Packages", fontSize = 12.sp)
                 }
             }
         }

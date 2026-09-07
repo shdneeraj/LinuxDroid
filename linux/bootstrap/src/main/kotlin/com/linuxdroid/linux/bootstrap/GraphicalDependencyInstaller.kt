@@ -287,7 +287,7 @@ class GraphicalDependencyInstaller(
         )
     }
 
-    private fun ensureWestonConfig(rootfsDir: File) {
+    fun ensureWestonConfig(rootfsDir: File) {
         val xdgDir = File(rootfsDir, "etc/xdg/weston").apply { mkdirs() }
         val configFile = File(xdgDir, "weston.ini")
         if (!configFile.exists()) {

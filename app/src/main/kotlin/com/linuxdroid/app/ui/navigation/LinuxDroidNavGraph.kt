@@ -24,6 +24,12 @@ sealed class Screen(val route: String) {
     object Settings : Screen("settings")
     object Diagnostics : Screen("diagnostics")
     object About : Screen("about")
+    object GuiInstaller : Screen("gui_installer/{environmentId}") {
+        fun route(environmentId: String) = "gui_installer/$environmentId"
+    }
+    object PackageManager : Screen("package_manager/{environmentId}") {
+        fun route(environmentId: String) = "package_manager/$environmentId"
+    }
 }
 
 /**
@@ -63,6 +69,20 @@ fun LinuxDroidNavGraph(
         }
         composable(Screen.About.route) {
             AboutScreen(navController = navController)
+        }
+        composable(
+            route = Screen.GuiInstaller.route,
+            arguments = listOf(navArgument("environmentId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val envId = backStackEntry.arguments?.getString("environmentId") ?: ""
+            GuiInstallerScreen(environmentId = envId, navController = navController)
+        }
+        composable(
+            route = Screen.PackageManager.route,
+            arguments = listOf(navArgument("environmentId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val envId = backStackEntry.arguments?.getString("environmentId") ?: ""
+            PackageManagerScreen(environmentId = envId, navController = navController)
         }
     }
 }

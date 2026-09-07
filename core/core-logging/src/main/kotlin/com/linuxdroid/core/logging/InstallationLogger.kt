@@ -107,6 +107,76 @@ class InstallationLogger(
         appendLog("[POSTINSTALL][FAIL][$operation]\nexit_code=$exitCode\nduration_ms=$durationMs\nstderr=${redactSensitive(stderr)}\ntimestamp=$ts")
     }
 
+    // ─── GUI Installation Phase Markers ──────────────────────────────────────
+
+    /**
+     * Logs the start of a GUI installation operation.
+     *
+     * Marker format: `[GUI_INSTALL][START][OPERATION]`
+     */
+    fun logGuiInstallStart(operation: String, command: String? = null) {
+        val ts = now()
+        val cmdStr = if (command != null) "\ncommand=${redactSensitive(command)}" else ""
+        appendLog("[GUI_INSTALL][START][$operation]$cmdStr\ntimestamp=$ts")
+    }
+
+    /**
+     * Logs the successful completion of a GUI installation operation.
+     *
+     * Marker format: `[GUI_INSTALL][SUCCESS][OPERATION]`
+     */
+    fun logGuiInstallSuccess(operation: String, durationMs: Long = 0, detail: String? = null) {
+        val ts = now()
+        val detailStr = if (detail != null) "\ndetail=${redactSensitive(detail)}" else ""
+        appendLog("[GUI_INSTALL][SUCCESS][$operation]\nduration_ms=$durationMs$detailStr\ntimestamp=$ts")
+    }
+
+    /**
+     * Logs the failure of a GUI installation operation.
+     * GUI failures never invalidate the CLI environment.
+     *
+     * Marker format: `[GUI_INSTALL][FAIL][OPERATION]`
+     */
+    fun logGuiInstallFail(operation: String, durationMs: Long = 0, exitCode: Int? = null, error: String? = null) {
+        val ts = now()
+        val codeStr = if (exitCode != null) "\nexit_code=$exitCode" else ""
+        val errStr = if (error != null) "\nstderr=${redactSensitive(error)}" else ""
+        appendLog("[GUI_INSTALL][FAIL][$operation]$codeStr$errStr\nduration_ms=$durationMs\ntimestamp=$ts")
+    }
+
+    // ─── Package Operation Markers ────────────────────────────────────────────
+
+    /**
+     * Logs the start of a manual package manager operation.
+     *
+     * Marker format: `[PACKAGE][START][OPERATION][packageName]`
+     */
+    fun logPackageOperationStart(operation: String, packageName: String) {
+        val ts = now()
+        appendLog("[PACKAGE][START][$operation][${redactSensitive(packageName)}]\ntimestamp=$ts")
+    }
+
+    /**
+     * Logs the successful completion of a manual package manager operation.
+     *
+     * Marker format: `[PACKAGE][SUCCESS][OPERATION][packageName]`
+     */
+    fun logPackageOperationSuccess(operation: String, packageName: String, durationMs: Long = 0) {
+        val ts = now()
+        appendLog("[PACKAGE][SUCCESS][$operation][${redactSensitive(packageName)}]\nduration_ms=$durationMs\ntimestamp=$ts")
+    }
+
+    /**
+     * Logs the failure of a manual package manager operation.
+     *
+     * Marker format: `[PACKAGE][FAIL][OPERATION][packageName]`
+     */
+    fun logPackageOperationFail(operation: String, packageName: String, exitCode: Int? = null, durationMs: Long = 0) {
+        val ts = now()
+        val codeStr = if (exitCode != null) "\nexit_code=$exitCode" else ""
+        appendLog("[PACKAGE][FAIL][$operation][${redactSensitive(packageName)}]$codeStr\nduration_ms=$durationMs\ntimestamp=$ts")
+    }
+
     /**
      * Atomically updates `<environmentDir>/installation/install-state`.
      */

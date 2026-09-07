@@ -8,17 +8,18 @@ import java.io.File
  * This script runs exclusively inside the guest Linux userspace via PRoot
  * under Guest Init (`/sbin/linuxdroid-init CLI /bin/bash /etc/linuxdroid/post-install.sh`).
  *
- * Implements the full Section 14 & 19 Post-Install specifications:
+ * Implements the CLI foundation provisioning:
  * - Reads `/etc/linuxdroid/install.conf`
- * - Validates staged packages and configuration
- * - Installs standard package baseline (33 packages)
- * - Installs Wayland, Weston, Pixman
- * - Installs staged LDDM.deb and LDDE.deb via APT
- * - Creates requested non-root user with zsh and sudo
+ * - Configures APT execution safeguards
+ * - Installs standard CLI package baseline (33 packages)
+ * - Creates the requested non-root user with zsh and sudo
  * - Sets user & root password securely via chpasswd from a temporary secret file
  * - Exact APT cleanup: autoremove -> clean -> update
- * - Final disk validation
+ * - Final CLI-only disk validation (no GUI packages required)
  * - Unlinks temporary secret and writes POST_INSTALL_COMPLETE
+ *
+ * GUI installation is NOT performed here. GUI is an optional layer installed
+ * separately by GuiInstaller after the CLI environment is ready.
  */
 object PostInstallScript {
     const val POST_INSTALL_SCRIPT_PATH = "/etc/linuxdroid/post-install.sh"
@@ -30,8 +31,9 @@ object PostInstallScript {
     val SCRIPT_CONTENT: String = """
 #!/bin/bash
 # =============================================================================
-# LinuxDroid — In-Guest Post-Install Provisioning Script
+# LinuxDroid — In-Guest CLI Provisioning Script
 # =============================================================================
+# Installs the CLI foundation only. GUI is installed separately by GuiInstaller.
 set -e
 
 export DEBIAN_FRONTEND=noninteractive
@@ -89,8 +91,9 @@ run_cmd() {
 }
 
 echo "================================================================================"
-echo "LINUXDROID IN-GUEST POST-INSTALL STARTING"
+echo "LINUXDROID IN-GUEST CLI PROVISIONING STARTING"
 echo "Timestamp: §(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+echo "Note: GUI packages are NOT installed here. Use GUI installer for graphical layer."
 echo "================================================================================"
 
 # -----------------------------------------------------------------------------
@@ -143,36 +146,7 @@ echo "duration_ms=5"
 echo "timestamp=§(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 # -----------------------------------------------------------------------------
-# 2. Validate Staged LinuxDroid Packages (LDDM.deb and LDDE.deb)
-# -----------------------------------------------------------------------------
-echo "[POSTINSTALL][START][VALIDATE_STAGED_DEBS]"
-echo "timestamp=§(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
-PKGS_DIR="/root/.linuxdroid/packages"
-LDDM_DEB="§(find "§PKGS_DIR" -type f -name "*display-manager*.deb" -o -name "*lddm*.deb" 2>/dev/null | head -n 1 || true)"
-LDDE_DEB="§(find "§PKGS_DIR" -type f -name "*desktop-environment*.deb" -o -name "*ldde*.deb" 2>/dev/null | head -n 1 || true)"
-
-if [ -z "§LDDM_DEB" ] || [ ! -f "§LDDM_DEB" ]; then
-    echo "[POSTINSTALL][FAIL][VALIDATE_STAGED_DEBS]"
-    echo "exit_code=1"
-    echo "stderr=Missing staged LDDM deb in §PKGS_DIR"
-    exit 1
-fi
-
-if [ -z "§LDDE_DEB" ] || [ ! -f "§LDDE_DEB" ]; then
-    echo "[POSTINSTALL][FAIL][VALIDATE_STAGED_DEBS]"
-    echo "exit_code=1"
-    echo "stderr=Missing staged LDDE deb in §PKGS_DIR"
-    exit 1
-fi
-
-echo "[POSTINSTALL][SUCCESS][VALIDATE_STAGED_DEBS]"
-echo "exit_code=0"
-echo "duration_ms=5"
-echo "timestamp=§(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
-# -----------------------------------------------------------------------------
-# 3. Configure APT Execution Safeguards
+# 2. Configure APT Execution Safeguards
 # -----------------------------------------------------------------------------
 cat > /usr/sbin/policy-rc.d << 'POLICY_EOF'
 #!/bin/sh
@@ -197,12 +171,12 @@ if [ -f /var/lib/dpkg/lock ] || [ -f /var/lib/dpkg/lock-frontend ]; then
 fi
 
 # -----------------------------------------------------------------------------
-# 4. APT Update
+# 3. APT Update
 # -----------------------------------------------------------------------------
 run_cmd "APT_UPDATE" "apt-get update" apt-get update
 
 # -----------------------------------------------------------------------------
-# 5. Install Standard Linux Packages (33 baseline)
+# 4. Install Standard CLI Linux Packages (33 baseline)
 # -----------------------------------------------------------------------------
 CORE_PACKAGES=(
     bash zsh coreutils util-linux procps psmisc findutils grep sed gawk file less sudo
@@ -217,68 +191,7 @@ CORE_PACKAGES=(
 run_cmd "INSTALL_CORE_PACKAGES" "apt-get install -y <core_33_packages>" apt-get install -y "§{CORE_PACKAGES[@]}"
 
 # -----------------------------------------------------------------------------
-# 6. Install Wayland, Weston, Pixman
-# -----------------------------------------------------------------------------
-GRAPHICS_PACKAGES=(
-    libwayland-client0
-    libwayland-server0
-    libwayland-cursor0
-    wayland-protocols
-    weston
-    xwayland
-    libpixman-1-0
-    fonts-dejavu-core
-)
-
-run_cmd "INSTALL_GRAPHICS_PACKAGES" "apt-get install -y <graphics_packages>" apt-get install -y "§{GRAPHICS_PACKAGES[@]}"
-
-mkdir -p /etc/xdg/weston
-if [ ! -f /etc/xdg/weston/weston.ini ]; then
-    cat << 'WESTON_INI_EOF' > /etc/xdg/weston/weston.ini
-[core]
-idle-time=0
-require-input=false
-backend=headless-backend.so
-
-[shell]
-locking=false
-WESTON_INI_EOF
-    chmod 0644 /etc/xdg/weston/weston.ini
-fi
-
-# -----------------------------------------------------------------------------
-# 7. Install LDDM & LDDE Through APT
-# -----------------------------------------------------------------------------
-run_cmd "INSTALL_LDDM" "apt-get install -y §LDDM_DEB" apt-get install -y "§LDDM_DEB"
-run_cmd "INSTALL_LDDE" "apt-get install -y §LDDE_DEB" apt-get install -y "§LDDE_DEB"
-
-# Write default LDDM and LDDE configurations if missing
-mkdir -p /etc/linuxdroid
-if [ ! -f /etc/linuxdroid/lddm.conf ]; then
-    cat << LDDM_CONF_EOF > /etc/linuxdroid/lddm.conf
-[lddm]
-weston_socket = wayland-0
-session_user = §USERNAME
-autostart = true
-LDDM_CONF_EOF
-    chmod 0644 /etc/linuxdroid/lddm.conf
-fi
-
-if [ ! -f /etc/linuxdroid/desktop.conf ]; then
-    cat << 'DESKTOP_CONF_EOF' > /etc/linuxdroid/desktop.conf
-[desktop]
-shell = default
-theme = default
-DESKTOP_CONF_EOF
-    chmod 0644 /etc/linuxdroid/desktop.conf
-fi
-
-if [ -x /usr/bin/ldde ] && [ ! -e /usr/bin/ldde-session ]; then
-    ln -sf /usr/bin/ldde /usr/bin/ldde-session
-fi
-
-# -----------------------------------------------------------------------------
-# 8. User Creation & Group Assignment
+# 5. User Creation & Group Assignment
 # -----------------------------------------------------------------------------
 create_user_action() {
     if ! getent group "§USERNAME" >/dev/null 2>&1; then
@@ -306,7 +219,7 @@ create_user_action() {
 run_cmd "CREATE_USER" "useradd -m -s /usr/bin/zsh §USERNAME" create_user_action
 
 # -----------------------------------------------------------------------------
-# 9. Password Configuration via chpasswd (Passwords strictly redacted)
+# 6. Password Configuration via chpasswd (Passwords strictly redacted)
 # -----------------------------------------------------------------------------
 configure_password_action() {
     local pass=""
@@ -323,7 +236,7 @@ configure_password_action() {
 run_cmd "CONFIGURE_PASSWORD" "chpasswd [REDACTED]" configure_password_action
 
 # -----------------------------------------------------------------------------
-# 10. Default Shell & Environment Files
+# 7. Default Shell & Environment Files
 # -----------------------------------------------------------------------------
 configure_shell_action() {
     local user_home="/home/§USERNAME"
@@ -335,9 +248,6 @@ configure_shell_action() {
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:§HOME/bin:§HOME/.local/bin
-export WAYLAND_DISPLAY=wayland-0
-export XDG_SESSION_TYPE=wayland
-export XDG_CURRENT_DESKTOP=LDDE
 PROMPT='%F{cyan}%n@linuxdroid%f:%F{yellow}%~%f§ '
 alias ll='ls -alF'
 ZSHRC_EOF
@@ -349,9 +259,6 @@ ZSHRC_EOF
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:§HOME/bin:§HOME/.local/bin
-export WAYLAND_DISPLAY=wayland-0
-export XDG_SESSION_TYPE=wayland
-export XDG_CURRENT_DESKTOP=LDDE
 PS1='\[\033[01;32m\]\u@linuxdroid\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\§ '
 alias ll='ls -alF'
 BASHRC_EOF
@@ -364,7 +271,7 @@ BASHRC_EOF
 run_cmd "CONFIGURE_SHELL" "configure default shell files for §USERNAME" configure_shell_action
 
 # -----------------------------------------------------------------------------
-# 11. Sudoers Configuration
+# 8. Sudoers Configuration
 # -----------------------------------------------------------------------------
 configure_sudo_action() {
     mkdir -p /etc/sudoers.d
@@ -377,7 +284,7 @@ SUDO_EOF
 run_cmd "CONFIGURE_SUDO" "configure sudoers for §USERNAME" configure_sudo_action
 
 # -----------------------------------------------------------------------------
-# 12. Strict APT Cleanup Sequence (autoremove -> clean -> update)
+# 9. Strict APT Cleanup Sequence (autoremove -> clean -> update)
 # -----------------------------------------------------------------------------
 run_cmd "APT_AUTOREMOVE" "apt-get autoremove --purge -y" apt-get autoremove --purge -y
 run_cmd "APT_CLEAN" "apt-get clean" apt-get clean
@@ -387,7 +294,7 @@ run_cmd "APT_UPDATE_FINAL" "apt-get update" apt-get update
 rm -f /usr/sbin/policy-rc.d 2>/dev/null || true
 
 # -----------------------------------------------------------------------------
-# 13. Final Linux-Side Validation (Checks files on disk without GUI)
+# 10. Final CLI Validation (no GUI packages required)
 # -----------------------------------------------------------------------------
 final_validation_action() {
     local missing=""
@@ -405,24 +312,17 @@ final_validation_action() {
     if [ ! -d "/home/§USERNAME" ]; then missing="§missing Home directory /home/§USERNAME;"; fi
     if [ ! -f "/etc/sudoers.d/010_§{USERNAME}-nopasswd" ]; then missing="§missing Sudo configuration;"; fi
 
-    # 4. Wayland, Weston, LDDM, LDDE
-    if [ ! -x /usr/bin/weston ] && ! command -v weston >/dev/null 2>&1; then
-        missing="§missing Weston executable;";
-    fi
-    if [ ! -f /etc/linuxdroid/lddm.conf ]; then missing="§missing /etc/linuxdroid/lddm.conf;"; fi
-    if [ ! -f /etc/linuxdroid/desktop.conf ]; then missing="§missing /etc/linuxdroid/desktop.conf;"; fi
-
     if [ -n "§missing" ]; then
-        echo "Validation failed: §missing" >&2
+        echo "CLI validation failed: §missing" >&2
         return 1
     fi
     return 0
 }
 
-run_cmd "FINAL_VALIDATION" "final validation of installed artifacts on disk" final_validation_action
+run_cmd "FINAL_VALIDATION" "CLI validation of installed artifacts on disk" final_validation_action
 
 # -----------------------------------------------------------------------------
-# 14. Purge Sensitive Temporary Secrets
+# 11. Purge Sensitive Temporary Secrets
 # -----------------------------------------------------------------------------
 if [ -f "§PASSWORD_FILE" ]; then
     rm -f "§PASSWORD_FILE" 2>/dev/null || true
@@ -431,11 +331,12 @@ fi
 if [ -f "§CONFIG_FILE" ]; then
     sed -i '/password_file/d; /PASSWORD_FILE/d' "§CONFIG_FILE" 2>/dev/null || true
 fi
-rm -rf "§PKGS_DIR" 2>/dev/null || true
 
 # -----------------------------------------------------------------------------
-# 15. Write Completion Markers
+# 12. Write CLI Completion Markers
 # -----------------------------------------------------------------------------
+mkdir -p /etc/linuxdroid
+
 cat > /etc/linuxdroid/POST_INSTALL_COMPLETE << MARKER_EOF
 STATUS=COMPLETE
 TIMESTAMP=§(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -443,6 +344,7 @@ DISTRO=§DISTRO
 RELEASE=§RELEASE
 ARCH=§ARCH
 USERNAME=§USERNAME
+GUI_INSTALLED=false
 MARKER_EOF
 
 cat > /etc/linuxdroid/ROOTFS_READY << READY_EOF
@@ -451,6 +353,7 @@ RELEASE=§RELEASE
 ARCH=§ARCH
 USERNAME=§USERNAME
 READY_AT=§(date -u +"%Y-%m-%dT%H:%M:%SZ")
+GUI_INSTALLED=false
 READY_EOF
 
 echo "[POSTINSTALL][SUCCESS][POST_INSTALL]"
@@ -477,9 +380,6 @@ exit 0
         release: String,
         arch: String,
         username: String,
-        packagesDir: String = STAGED_PACKAGES_DIR,
-        lddmDebPath: String = "$STAGED_PACKAGES_DIR/linuxdroid-display-manager.deb",
-        lddeDebPath: String = "$STAGED_PACKAGES_DIR/linuxdroid-desktop-environment.deb",
         passwordFile: String = INSTALL_SECRET_PATH,
     ): File {
         val configFile = File(rootfsDir, INSTALL_CONFIG_PATH.removePrefix("/"))
@@ -489,9 +389,6 @@ exit 0
             RELEASE=$release
             ARCH=$arch
             USERNAME=$username
-            PACKAGES_DIR=$packagesDir
-            LDDM_DEB=$lddmDebPath
-            LDDE_DEB=$lddeDebPath
             PASSWORD_FILE=$passwordFile
         """.trimIndent() + "\n"
         configFile.writeText(content, Charsets.UTF_8)
@@ -512,27 +409,6 @@ exit 0
         return secretFile
     }
 
-    fun writePreInstallReadyMarker(
-        rootfsDir: File,
-        distro: String,
-        release: String,
-        username: String,
-        arch: String,
-    ): File {
-        val markerFile = File(rootfsDir, "etc/linuxdroid/PRE_INSTALL_READY")
-        markerFile.parentFile?.mkdirs()
-        val content = """
-            DISTRO=$distro
-            RELEASE=$release
-            USERNAME=$username
-            ARCH=$arch
-            STATUS=PRE_INSTALL_READY
-            TIMESTAMP=${System.currentTimeMillis()}
-        """.trimIndent() + "\n"
-        markerFile.writeText(content, Charsets.UTF_8)
-        return markerFile
-    }
-
     fun writePostInstallCompleteMarker(
         rootfsDir: File,
         distro: String,
@@ -549,10 +425,7 @@ exit 0
             DISTRO=$distro
             RELEASE=$release
             ARCH=$arch
-            LDDM_INSTALLED=true
-            LDDE_INSTALLED=true
-            WESTON_INSTALLED=true
-            WAYLAND_INSTALLED=true
+            GUI_INSTALLED=false
         """.trimIndent() + "\n"
         markerFile.writeText(content, Charsets.UTF_8)
         return markerFile
@@ -573,6 +446,7 @@ exit 0
             ARCH=$arch
             USERNAME=$username
             READY_AT=${System.currentTimeMillis()}
+            GUI_INSTALLED=false
         """.trimIndent() + "\n"
         markerFile.writeText(content, Charsets.UTF_8)
         return markerFile

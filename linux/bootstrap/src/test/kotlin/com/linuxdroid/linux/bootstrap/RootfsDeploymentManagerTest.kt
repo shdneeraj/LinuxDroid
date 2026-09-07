@@ -1026,27 +1026,12 @@ class RootfsDeploymentManagerTest {
     }
 
     // =========================================================================
-    // TEST 21: Pre-Install Phase Separation and Staging Validation
+    // TEST 21: CLI Provisioning Phase Separation and GUI Independence
     // =========================================================================
     @Test
-    fun `TEST 21 - Pre-install marks PRE_INSTALL_READY, stages deb packages, and does not install desktop or create users`() = runBlocking {
-        val rootfsDir = tempFolder.newFolder("pre-install-rootfs")
-        populateMockRootfs(rootfsDir, withWayland = true, withWeston = true, withLddm = false, withLdde = false)
-
-        val lddmDeb = tempFolder.newFile("lddm-p21.deb")
-        createMockDeb(
-            destFile = lddmDeb,
-            packageName = "linuxdroid-display-manager",
-            version = "1.0.0",
-            files = mapOf("usr/bin/lddm" to "LDDM_BIN"),
-        )
-        val lddeDeb = tempFolder.newFile("ldde-p21.deb")
-        createMockDeb(
-            destFile = lddeDeb,
-            packageName = "linuxdroid-desktop-environment",
-            version = "1.0.0",
-            files = mapOf("usr/bin/ldde" to "LDDE_BIN"),
-        )
+    fun `TEST 21 - CLI provisioning installs CLI baseline and configures user without installing GUI packages`(): Unit = runBlocking {
+        val rootfsDir = tempFolder.newFolder("cli-provision-rootfs")
+        populateMockRootfs(rootfsDir, withWayland = false, withWeston = false, withLddm = false, withLdde = false)
 
         val storage = mockk<EnvironmentStorage>(relaxed = true)
         every { storage.rootfsDir(testEnvId) } returns rootfsDir
@@ -1069,70 +1054,57 @@ class RootfsDeploymentManagerTest {
             password = "SecretPassword123",
         )
 
-        val readyRootfs = deploymentManager.executePreInstall(
+        deploymentManager.executeCliProvisioning(
             environment = testEnv,
             installConfig = config,
-            lddmDebOverride = lddmDeb,
-            lddeDebOverride = lddeDeb,
         )
 
-        // 1. Verify PRE_INSTALL_READY marker exists
-        val preMarker = File(readyRootfs, "etc/linuxdroid/PRE_INSTALL_READY")
-        assertThat(preMarker.exists()).isTrue()
-        val preContent = preMarker.readText()
-        assertThat(preContent).contains("STATUS=PRE_INSTALL_READY")
-        assertThat(preContent).contains("USERNAME=developer")
+        // 1. Verify POST_INSTALL_COMPLETE marker exists and confirms GUI_INSTALLED=false
+        val postMarker = File(rootfsDir, "etc/linuxdroid/POST_INSTALL_COMPLETE")
+        assertThat(postMarker.exists()).isTrue()
+        val postContent = postMarker.readText()
+        assertThat(postContent).contains("STATUS=POST_INSTALL_COMPLETE")
+        assertThat(postContent).contains("USER=developer")
+        assertThat(postContent).contains("GUI_INSTALLED=false")
 
-        // 2. Verify staged debs exist in /root/.linuxdroid/packages
-        val stagedPkgsDir = File(readyRootfs, "root/.linuxdroid/packages")
-        assertThat(File(stagedPkgsDir, "linuxdroid-display-manager.deb").exists()).isTrue()
-        assertThat(File(stagedPkgsDir, "LDDM.deb").exists()).isTrue()
-        assertThat(File(stagedPkgsDir, "linuxdroid-desktop-environment.deb").exists()).isTrue()
-        assertThat(File(stagedPkgsDir, "LDDE.deb").exists()).isTrue()
-
-        // 3. Verify install.conf, .install.secret, post-install.sh exist
-        assertThat(File(readyRootfs, "etc/linuxdroid/install.conf").exists()).isTrue()
-        assertThat(File(readyRootfs, "etc/linuxdroid/.install.secret").exists()).isTrue()
-        val postScript = File(readyRootfs, "etc/linuxdroid/post-install.sh")
+        // 2. Verify install.conf and post-install.sh exist
+        assertThat(File(rootfsDir, "etc/linuxdroid/install.conf").exists()).isTrue()
+        val postScript = File(rootfsDir, "etc/linuxdroid/post-install.sh")
         assertThat(postScript.exists()).isTrue()
         assertThat(postScript.canExecute()).isTrue()
 
-        // 4. Critical requirement: Pre-install MUST NOT install desktop packages or create users
-        assertThat(File(readyRootfs, "usr/bin/lddm").exists()).isFalse()
-        assertThat(File(readyRootfs, "usr/bin/ldde").exists()).isFalse()
-        assertThat(File(readyRootfs, "home/developer").exists()).isFalse()
-        assertThat(File(readyRootfs, "etc/sudoers.d/010_developer-nopasswd").exists()).isFalse()
-        assertThat(File(readyRootfs, "etc/linuxdroid/POST_INSTALL_COMPLETE").exists()).isFalse()
+        // 3. Verify user and sudoers are configured
+        assertThat(File(rootfsDir, "home/developer").exists()).isTrue()
+        val sudoersFile = File(rootfsDir, "etc/sudoers.d/010_developer-nopasswd")
+        assertThat(sudoersFile.exists()).isTrue()
+        assertThat(sudoersFile.readText()).contains("developer ALL=(ALL) NOPASSWD: ALL")
+
+        // 4. Critical requirement: Base CLI provisioning MUST NOT install GUI packages
+        assertThat(File(rootfsDir, "usr/bin/lddm").exists()).isFalse()
+        assertThat(File(rootfsDir, "usr/bin/ldde").exists()).isFalse()
+        assertThat(File(rootfsDir, "etc/linuxdroid/GUI_INSTALL_COMPLETE").exists()).isFalse()
     }
 
     // =========================================================================
-    // TEST 22: Post-Install Execution and Cleanup
+    // TEST 22: Deploy Rootfs Establishes CLI Foundation and Sets NOT_INSTALLED GUI State
     // =========================================================================
     @Test
-    fun `TEST 22 - Post-install executes, configures user and sudoers, cleans secrets, and marks POST_INSTALL_COMPLETE`() = runBlocking {
+    fun `TEST 22 - Deploy rootfs completes CLI provisioning, removes temporary secret, and initializes gui-state to NOT_INSTALLED`(): Unit = runBlocking {
         val rootfsDir = tempFolder.newFolder("post-install-rootfs")
-        populateMockRootfs(rootfsDir, withWayland = true, withWeston = true, withLddm = false, withLdde = false)
+        populateMockRootfs(rootfsDir, withWayland = false, withWeston = false, withLddm = false, withLdde = false)
 
-        val lddmDeb = tempFolder.newFile("lddm-p22.deb")
-        createMockDeb(
-            destFile = lddmDeb,
-            packageName = "linuxdroid-display-manager",
-            version = "1.0.0",
-            files = mapOf("usr/bin/lddm" to "LDDM_BIN"),
-        )
-        val lddeDeb = tempFolder.newFile("ldde-p22.deb")
-        createMockDeb(
-            destFile = lddeDeb,
-            packageName = "linuxdroid-desktop-environment",
-            version = "1.0.0",
-            files = mapOf("usr/bin/ldde" to "LDDE_BIN"),
-        )
-
+        val metaDir = tempFolder.newFolder("meta-22")
         val storage = mockk<EnvironmentStorage>(relaxed = true)
         every { storage.rootfsDir(testEnvId) } returns rootfsDir
         every { storage.stagingRootfsDir(testEnvId) } returns rootfsDir
         every { storage.logsDir(testEnvId) } returns tempFolder.newFolder("logs-22")
-        every { storage.metadataDir(testEnvId) } returns tempFolder.newFolder("meta-22")
+        every { storage.metadataDir(testEnvId) } returns metaDir
+        every { storage.guiStateFile(testEnvId) } returns File(metaDir, "gui-state")
+        coEvery { storage.writeAtomic(any(), any()) } coAnswers {
+            val f = firstArg<File>()
+            f.parentFile?.mkdirs()
+            f.writeText(secondArg<String>())
+        }
 
         val deploymentManager = RootfsDeploymentManager(
             storage = storage,
@@ -1149,30 +1121,19 @@ class RootfsDeploymentManagerTest {
             password = "SecretPassword123",
         )
 
-        // Run Pre-Install first
-        deploymentManager.executePreInstall(
+        val result = deploymentManager.deployRootfs(
             environment = testEnv,
             installConfig = config,
-            lddmDebOverride = lddmDeb,
-            lddeDebOverride = lddeDeb,
         )
 
-        // Run Post-Install
-        deploymentManager.executePostInstall(
-            environment = testEnv,
-            installConfig = config,
-            lddmDebOverride = lddmDeb,
-            lddeDebOverride = lddeDeb,
-        )
+        assertThat(result.isSuccess).isTrue()
+        assertThat(result.state).isEqualTo(RootfsDeploymentState.ROOTFS_READY)
 
-        // Verify Post-Install completed
+        // Verify CLI completed marker exists
         val postMarker = File(rootfsDir, "etc/linuxdroid/POST_INSTALL_COMPLETE")
         assertThat(postMarker.exists()).isTrue()
         assertThat(postMarker.readText()).contains("STATUS=POST_INSTALL_COMPLETE")
-
-        // Verify packages installed
-        assertThat(File(rootfsDir, "usr/bin/lddm").exists()).isTrue()
-        assertThat(File(rootfsDir, "usr/bin/ldde").exists()).isTrue()
+        assertThat(postMarker.readText()).contains("GUI_INSTALLED=false")
 
         // Verify user and sudoers configured
         assertThat(File(rootfsDir, "home/developer").exists()).isTrue()
@@ -1182,38 +1143,29 @@ class RootfsDeploymentManagerTest {
 
         // Verify temporary secret removed
         assertThat(File(rootfsDir, "etc/linuxdroid/.install.secret").exists()).isFalse()
-        assertThat(File(rootfsDir, "root/.linuxdroid/packages").exists()).isFalse()
+
+        // Verify gui-state initialized to NOT_INSTALLED
+        val guiStateFile = File(metaDir, "gui-state")
+        assertThat(guiStateFile.exists()).isTrue()
+        assertThat(guiStateFile.readText().trim()).isEqualTo("NOT_INSTALLED")
     }
 
     // =========================================================================
     // TEST 23: Installation Logging and Credential Redaction
     // =========================================================================
     @Test
-    fun `TEST 23 - Full two-phase deployment creates install log with standardized markers and redacts passwords`() = runBlocking {
+    fun `TEST 23 - Full CLI deployment creates install log with standardized markers and redacts passwords`(): Unit = runBlocking {
         val rootfsDir = tempFolder.newFolder("log-test-rootfs")
-        populateMockRootfs(rootfsDir, withWayland = true, withWeston = true, withLddm = false, withLdde = false)
-
-        val lddmDeb = tempFolder.newFile("lddm-p23.deb")
-        createMockDeb(
-            destFile = lddmDeb,
-            packageName = "linuxdroid-display-manager",
-            version = "1.0.0",
-            files = mapOf("usr/bin/lddm" to "LDDM_BIN"),
-        )
-        val lddeDeb = tempFolder.newFile("ldde-p23.deb")
-        createMockDeb(
-            destFile = lddeDeb,
-            packageName = "linuxdroid-desktop-environment",
-            version = "1.0.0",
-            files = mapOf("usr/bin/ldde" to "LDDE_BIN"),
-        )
+        populateMockRootfs(rootfsDir, withWayland = false, withWeston = false, withLddm = false, withLdde = false)
 
         val installDir = tempFolder.newFolder("install-23")
+        val metaDir = tempFolder.newFolder("meta-23")
         val storage = mockk<EnvironmentStorage>(relaxed = true)
         every { storage.rootfsDir(testEnvId) } returns rootfsDir
         every { storage.stagingRootfsDir(testEnvId) } returns rootfsDir
         every { storage.logsDir(testEnvId) } returns tempFolder.newFolder("logs-23")
-        every { storage.metadataDir(testEnvId) } returns tempFolder.newFolder("meta-23")
+        every { storage.metadataDir(testEnvId) } returns metaDir
+        every { storage.guiStateFile(testEnvId) } returns File(metaDir, "gui-state")
         every { storage.installationDir(testEnvId) } returns installDir
         every { storage.installationLogFile(testEnvId) } returns File(installDir, "install.log")
         every { storage.installationStateFile(testEnvId) } returns File(installDir, "install-state")
@@ -1238,8 +1190,6 @@ class RootfsDeploymentManagerTest {
         val result = deploymentManager.deployRootfs(
             environment = testEnv,
             installConfig = config,
-            lddmDebOverride = lddmDeb,
-            lddeDebOverride = lddeDeb,
         )
 
         assertThat(result.isSuccess).isTrue()
@@ -1252,10 +1202,10 @@ class RootfsDeploymentManagerTest {
         assertThat(logFile.exists()).isTrue()
         val logContent = logFile.readText()
         // Standardized markers
-        assertThat(logContent).contains("[PREINSTALL][START][PRE_INSTALL]")
-        assertThat(logContent).contains("[PREINSTALL][SUCCESS][PRE_INSTALL]")
-        assertThat(logContent).contains("[POSTINSTALL][START][POST_INSTALL]")
-        assertThat(logContent).contains("[POSTINSTALL][SUCCESS][POST_INSTALL]")
+        assertThat(logContent).contains("[POSTINSTALL][START][CLI_PROVISIONING]")
+        assertThat(logContent).contains("[POSTINSTALL][SUCCESS][CLI_PROVISIONING]")
+        assertThat(logContent).contains("[POSTINSTALL][START][CREATE_USER]")
+        assertThat(logContent).contains("[POSTINSTALL][START][CONFIGURE_PASSWORD]")
 
         // Password redaction guarantee
         assertThat(logContent).doesNotContain(secretPass)
@@ -1264,28 +1214,47 @@ class RootfsDeploymentManagerTest {
     }
 
     // =========================================================================
-    // TEST 24: Post-Install Fails Safely if PRE_INSTALL_READY is Missing
+    // TEST 24: In-Guest CLI Provisioning Failure Throws RuntimeError
     // =========================================================================
     @Test
-    fun `TEST 24 - Post-install fails safely if PRE_INSTALL_READY is missing`() {
-        val rootfsDir = tempFolder.newFolder("no-pre-ready-rootfs")
+    fun `TEST 24 - In-guest CLI provisioning failure throws RuntimeError and marks ROOTFS_DEPLOYMENT_FAILED`() {
+        val rootfsDir = tempFolder.newFolder("fail-rootfs")
         populateMockRootfs(rootfsDir)
 
         val storage = mockk<EnvironmentStorage>(relaxed = true)
         every { storage.rootfsDir(testEnvId) } returns rootfsDir
 
+        val mockBackend = mockk<RuntimeBackend>()
+        coEvery {
+            mockBackend.executeAndWait(
+                environment = any(),
+                command = any(),
+                workingDirectory = any(),
+                extraEnv = any(),
+                timeoutMs = any(),
+            )
+        } returns ProcessResult(
+            handleId = "proc-01",
+            exitCode = 1,
+            stdout = "",
+            stderr = "E: dpkg was interrupted, you must manually run dpkg --configure -a",
+        )
+
         val deploymentManager = RootfsDeploymentManager(
             storage = storage,
             validator = validator,
+            runtimeBackend = mockBackend,
         )
 
         val ex = assertThrows(RuntimeError::class.java) {
             runBlocking {
-                deploymentManager.executePostInstall(environment = testEnv)
+                deploymentManager.executeCliProvisioning(environment = testEnv)
             }
         }
 
-        assertThat(ex.message).contains("PRE_INSTALL_READY")
+        assertThat(ex.message).contains("In-guest CLI provisioning failed with exit code 1")
+        assertThat(deploymentManager.deploymentStates.value[testEnvId.value])
+            .isEqualTo(RootfsDeploymentState.ROOTFS_DEPLOYMENT_FAILED)
     }
 }
 

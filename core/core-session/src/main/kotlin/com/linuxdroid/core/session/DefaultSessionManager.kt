@@ -148,6 +148,36 @@ class DefaultSessionManager(
                 return@withContext session
             }
 
+            // 3.5 Check GUI installation state
+            val rootfsDir = storage.rootfsDir(environment.id)
+            val guiStateFile = storage.guiStateFile(environment.id)
+            val guiStateText = if (guiStateFile.exists()) guiStateFile.readText(Charsets.UTF_8).trim() else ""
+            val guiState = GuiState.fromString(guiStateText)
+
+            val guiMarker = File(rootfsDir, "etc/linuxdroid/GUI_INSTALL_COMPLETE")
+            val lddmExists = File(rootfsDir, "usr/bin/lddm").exists() || File(rootfsDir, "usr/local/bin/lddm").exists()
+
+            if (guiState == GuiState.NOT_INSTALLED && !guiMarker.exists() && !lddmExists) {
+                log.withEnvironment(environment.id).warn("[SESSION] GUI is not installed")
+                throw GuiNotInstalledError(environment.id)
+            }
+
+            if (guiState == GuiState.FAILED && !guiMarker.exists() && !lddmExists) {
+                val reason = environment.guiFailureMessage ?: "Previous GUI installation failed"
+                log.withEnvironment(environment.id).warn("[SESSION] GUI installation previously failed: $reason")
+                throw GuiInstallFailedError(environment.id, reason)
+            }
+
+            if (guiState == GuiState.INSTALLING || guiState == GuiState.REPAIRING) {
+                log.withEnvironment(environment.id).warn("[SESSION] GUI installation in progress")
+                throw GuiInstallInProgressError(environment.id)
+            }
+
+            if (!lddmExists) {
+                log.withEnvironment(environment.id).error("[SESSION] GUI validation failed: /usr/bin/lddm missing")
+                throw GuiValidationFailedError(environment.id, "LDDM binary (/usr/bin/lddm) missing on disk")
+            }
+
             // 4. Initialize GPU
             log.withEnvironment(environment.id).info("[SESSION_STEP_4] Initializing GPU detection")
             gpuManager?.detect()
@@ -221,7 +251,6 @@ class DefaultSessionManager(
                 }
             }
 
-            val rootfsDir = storage.rootfsDir(environment.id)
             ensureGuiSessionEnvironment(rootfsDir)
 
             val lddmPath = listOf("/usr/bin/lddm", "/usr/local/bin/lddm")

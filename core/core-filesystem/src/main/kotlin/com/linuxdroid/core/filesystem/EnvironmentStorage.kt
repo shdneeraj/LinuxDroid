@@ -95,6 +95,15 @@ class EnvironmentStorage(
     /** Returns the persistent installation metadata file. */
     fun installationMetadataFile(id: EnvironmentId): File = File(installationDir(id), "install-metadata")
 
+    /** Returns the persistent GUI installation state file. */
+    fun guiStateFile(id: EnvironmentId): File = File(metadataDir(id), "gui-state")
+
+    /** Returns the GUI installation log file. */
+    fun guiInstallLogFile(id: EnvironmentId): File = File(logsDir(id), "gui-install.log")
+
+    /** Returns the GUI installation state file used for atomic state tracking. */
+    fun guiInstallStateFile(id: EnvironmentId): File = File(metadataDir(id), "gui-install-state")
+
     /** Returns all available categorized log files for the environment. */
     fun allLogFiles(id: EnvironmentId): List<File> = listOf(
         sessionLogFile(id),
@@ -106,6 +115,7 @@ class EnvironmentStorage(
         consoleLogFile(id),
         diagnosticsLogFile(id),
         installationLogFile(id),
+        guiInstallLogFile(id),
     )
 
     /**
