@@ -18,6 +18,7 @@ enum class InputEventType {
     MOUSE_SCROLL,
     KEY_PRESS,
     KEY_RELEASE,
+    RESET_INPUT,
 };
 
 struct NativeInputEvent {
@@ -43,6 +44,7 @@ public:
     void sendTouchEvent(int action, int pointerId, float x, float y, float pressure);
     void sendMouseEvent(int action, int buttonState, float x, float y, float scrollX, float scrollY);
     void sendKeyEvent(int keyCode, bool isDown, int metaState, int unicodeChar);
+    void resetInput();
 
     bool popEvent(NativeInputEvent* outEvent);
     size_t getPendingEventCount() const;

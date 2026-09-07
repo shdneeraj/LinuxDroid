@@ -165,6 +165,20 @@ void InputBridge::sendKeyEvent(int keyCode, bool isDown, int metaState, int unic
     pushEventLocked(evt);
 }
 
+void InputBridge::resetInput() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Clear pending unconsumed events to prevent stale moves or clicks
+    while (!eventQueue_.empty()) {
+        eventQueue_.pop();
+    }
+    NativeInputEvent evt;
+    evt.type = InputEventType::RESET_INPUT;
+    evt.timestampNs = getCurrentTimestampNs();
+    eventQueue_.push(evt);
+    wakeCompositorLoop();
+    LOGI("INPUT_STATE_RESET: queued full input state reset for compositor thread");
+}
+
 bool InputBridge::popEvent(NativeInputEvent* outEvent) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (eventQueue_.empty() || outEvent == nullptr) return false;

@@ -923,10 +923,18 @@ void GuiHost::processQueuedInput() {
             }
 
             case InputEventType::MOUSE_MOVE: {
-                int w = output_ ? output_->width : window_width_;
-                int h = output_ ? output_->height : window_height_;
-                double cx = InputTranslator::clampCoordinate(evt.x, w);
-                double cy = InputTranslator::clampCoordinate(evt.y, h);
+                int out_w = output_ ? output_->width : window_width_;
+                int out_h = output_ ? output_->height : window_height_;
+                float in_x = evt.x;
+                float in_y = evt.y;
+                if (window_width_ > 0 && out_w > 0 && window_width_ != out_w) {
+                    in_x = (in_x * static_cast<float>(out_w)) / static_cast<float>(window_width_);
+                }
+                if (window_height_ > 0 && out_h > 0 && window_height_ != out_h) {
+                    in_y = (in_y * static_cast<float>(out_h)) / static_cast<float>(window_height_);
+                }
+                double cx = InputTranslator::clampCoordinate(in_x, out_w);
+                double cy = InputTranslator::clampCoordinate(in_y, out_h);
                 struct weston_coord_global pos = { .c = { .x = cx, .y = cy } };
                 struct weston_pointer_motion_event motion_event = {};
                 motion_event.base.ts = ts;
@@ -940,6 +948,26 @@ void GuiHost::processQueuedInput() {
 
             case InputEventType::MOUSE_DOWN:
             case InputEventType::MOUSE_UP: {
+                int out_w = output_ ? output_->width : window_width_;
+                int out_h = output_ ? output_->height : window_height_;
+                float in_x = evt.x;
+                float in_y = evt.y;
+                if (window_width_ > 0 && out_w > 0 && window_width_ != out_w) {
+                    in_x = (in_x * static_cast<float>(out_w)) / static_cast<float>(window_width_);
+                }
+                if (window_height_ > 0 && out_h > 0 && window_height_ != out_h) {
+                    in_y = (in_y * static_cast<float>(out_h)) / static_cast<float>(window_height_);
+                }
+                double cx = InputTranslator::clampCoordinate(in_x, out_w);
+                double cy = InputTranslator::clampCoordinate(in_y, out_h);
+                struct weston_coord_global pos = { .c = { .x = cx, .y = cy } };
+                struct weston_pointer_motion_event motion_event = {};
+                motion_event.base.ts = ts;
+                motion_event.base.seat = seat;
+                motion_event.mask = WESTON_POINTER_MOTION_ABS;
+                motion_event.abs = pos;
+                notify_motion(&motion_event);
+
                 uint32_t button = InputTranslator::androidButtonToLinux(evt.id);
                 struct weston_pointer_button_event btn_event = {};
                 btn_event.base.ts = ts;
@@ -978,10 +1006,18 @@ void GuiHost::processQueuedInput() {
             case InputEventType::TOUCH_MOVE:
             case InputEventType::TOUCH_UP: {
                 if (touch_dev != nullptr) {
-                    int w = output_ ? output_->width : window_width_;
-                    int h = output_ ? output_->height : window_height_;
-                    double cx = InputTranslator::clampCoordinate(evt.x, w);
-                    double cy = InputTranslator::clampCoordinate(evt.y, h);
+                    int out_w = output_ ? output_->width : window_width_;
+                    int out_h = output_ ? output_->height : window_height_;
+                    float in_x = evt.x;
+                    float in_y = evt.y;
+                    if (window_width_ > 0 && out_w > 0 && window_width_ != out_w) {
+                        in_x = (in_x * static_cast<float>(out_w)) / static_cast<float>(window_width_);
+                    }
+                    if (window_height_ > 0 && out_h > 0 && window_height_ != out_h) {
+                        in_y = (in_y * static_cast<float>(out_h)) / static_cast<float>(window_height_);
+                    }
+                    double cx = InputTranslator::clampCoordinate(in_x, out_w);
+                    double cy = InputTranslator::clampCoordinate(in_y, out_h);
                     struct weston_coord_global pos = { .c = { .x = cx, .y = cy } };
                     int32_t ttype = WL_TOUCH_MOTION;
                     if (evt.type == InputEventType::TOUCH_DOWN) ttype = WL_TOUCH_DOWN;
@@ -1006,8 +1042,19 @@ void GuiHost::processQueuedInput() {
                 }
                 break;
             }
+
+            case InputEventType::RESET_INPUT: {
+                if (backend_ != nullptr) {
+                    linuxdroid_backend_reset_input(backend_);
+                }
+                break;
+            }
         }
     }
+}
+
+void GuiHost::resetInput() {
+    InputBridge::getInstance().resetInput();
 }
 
 void GuiHost::enqueueWindowAction(uint64_t window_id, const std::string& action) {

@@ -54,6 +54,7 @@ public:
     void destroyNativeWindow();
 
     void processQueuedInput();
+    void resetInput();
     void processPendingWindowActions();
     void enqueueWindowAction(uint64_t window_id, const std::string& action);
     void enqueueWindowAction(void* handle, const std::string& action, int32_t p1 = 0, int32_t p2 = 0);

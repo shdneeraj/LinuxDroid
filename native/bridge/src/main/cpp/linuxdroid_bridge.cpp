@@ -443,6 +443,12 @@ Java_com_linuxdroid_native_1bridge_NativeBridge_nativeSendKeyEvent(
     linuxdroid::InputBridge::getInstance().sendKeyEvent(keyCode, isDown, metaState, unicodeChar);
 }
 
+JNIEXPORT void JNICALL
+Java_com_linuxdroid_native_1bridge_NativeBridge_nativeResetInput(
+    [[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz) {
+    linuxdroid::gui::GuiHost::getInstance().resetInput();
+}
+
 // ─── Audio ────────────────────────────────────────────────────────────────────
 
 JNIEXPORT jboolean JNICALL

@@ -623,6 +623,7 @@ private fun LinuxDesktopWorkspace(
 ) {
     val neuColors = NeuTheme.colors
     val context = LocalContext.current
+    var surfaceViewRef by remember { mutableStateOf<GuiSurfaceView?>(null) }
 
     Scaffold(
         containerColor = Color(0xFF1E222B),
@@ -671,6 +672,12 @@ private fun LinuxDesktopWorkspace(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
+                        IconButton(
+                            onClick = { surfaceViewRef?.toggleSoftKeyboard() },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Default.Keyboard, contentDescription = "Keyboard", tint = neuColors.primaryAccent, modifier = Modifier.size(16.dp))
+                        }
                         IconButton(onClick = onOpenTerminal, modifier = Modifier.size(28.dp)) {
                             Icon(Icons.Default.Terminal, contentDescription = "Terminal", tint = neuColors.primaryAccent, modifier = Modifier.size(16.dp))
                         }
@@ -694,7 +701,7 @@ private fun LinuxDesktopWorkspace(
         ) {
             AndroidView(
                 factory = { ctx ->
-                    GuiSurfaceView(ctx)
+                    GuiSurfaceView(ctx).also { surfaceViewRef = it }
                 },
                 modifier = Modifier.fillMaxSize()
             )

@@ -13,5 +13,6 @@ interface InputManager {
     fun sendTouchEvent(action: Int, pointerId: Int, x: Float, y: Float, pressure: Float = 1.0f)
     fun sendMouseEvent(action: Int, buttonState: Int, x: Float, y: Float, scrollX: Float = 0f, scrollY: Float = 0f)
     fun sendKeyEvent(keyCode: Int, isDown: Boolean, metaState: Int = 0, unicodeChar: Int = 0)
+    fun resetInput()
     fun setScreenBounds(widthPx: Int, heightPx: Int)
 }

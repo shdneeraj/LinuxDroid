@@ -55,6 +55,21 @@ static void test_keycode_translation() {
     assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_EQUALS) == KEY_EQUAL);
     assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_SLASH) == KEY_SLASH);
 
+    // Android system & media keys
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_BACK) == KEY_BACK);
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_WINDOW) == KEY_LEFTMETA);
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_SYSRQ) == KEY_SYSRQ);
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_MENU) == KEY_COMPOSE);
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_VOLUME_UP) == KEY_VOLUMEUP);
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_VOLUME_DOWN) == KEY_VOLUMEDOWN);
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_VOLUME_MUTE) == KEY_MUTE);
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_MEDIA_PLAY_PAUSE) == KEY_PLAYPAUSE);
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_MEDIA_STOP) == KEY_STOPCD);
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_MEDIA_NEXT) == KEY_NEXTSONG);
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_MEDIA_PREVIOUS) == KEY_PREVIOUSSONG);
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_BRIGHTNESS_UP) == KEY_BRIGHTNESSUP);
+    assert(InputTranslator::androidKeycodeToLinux(AKEYCODE_BRIGHTNESS_DOWN) == KEY_BRIGHTNESSDOWN);
+
     // Unknown keycode
     assert(InputTranslator::androidKeycodeToLinux(99999) == KEY_RESERVED);
     assert(InputTranslator::androidKeycodeToLinux(-1) == KEY_RESERVED);
@@ -130,6 +145,16 @@ static void test_input_bridge_queue_and_overflow() {
 
     bridge.clear();
     assert(bridge.getPendingEventCount() == 0);
+
+    // Test resetInput
+    bridge.sendTouchEvent(0, 0, 50.0f, 50.0f, 1.0f);
+    bridge.sendKeyEvent(AKEYCODE_SHIFT_LEFT, true, 0, 0);
+    assert(bridge.getPendingEventCount() == 2);
+    bridge.resetInput();
+    assert(bridge.getPendingEventCount() == 1);
+    NativeInputEvent resetEvt;
+    assert(bridge.popEvent(&resetEvt));
+    assert(resetEvt.type == InputEventType::RESET_INPUT);
 
     printf("[PASS] test_input_bridge_queue_and_overflow\n");
 }

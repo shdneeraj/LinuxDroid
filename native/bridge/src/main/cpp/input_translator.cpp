@@ -126,6 +126,24 @@ uint32_t InputTranslator::androidKeycodeToLinux(int32_t androidKeycode) {
         case AKEYCODE_PERIOD: return KEY_DOT;
         case AKEYCODE_SLASH: return KEY_SLASH;
 
+        // Android Specific & System Keys
+        case AKEYCODE_BACK: return KEY_BACK;
+        case AKEYCODE_WINDOW: return KEY_LEFTMETA;
+        case AKEYCODE_SYSRQ: return KEY_SYSRQ;
+        case AKEYCODE_MENU: return KEY_COMPOSE;
+        case AKEYCODE_VOLUME_UP: return KEY_VOLUMEUP;
+        case AKEYCODE_VOLUME_DOWN: return KEY_VOLUMEDOWN;
+        case AKEYCODE_VOLUME_MUTE: return KEY_MUTE;
+        case AKEYCODE_MEDIA_PLAY_PAUSE: return KEY_PLAYPAUSE;
+        case AKEYCODE_MEDIA_STOP: return KEY_STOPCD;
+        case AKEYCODE_MEDIA_NEXT: return KEY_NEXTSONG;
+        case AKEYCODE_MEDIA_PREVIOUS: return KEY_PREVIOUSSONG;
+        case AKEYCODE_MEDIA_PLAY: return KEY_PLAY;
+        case AKEYCODE_MEDIA_PAUSE: return KEY_PAUSE;
+        case AKEYCODE_MEDIA_RECORD: return KEY_RECORD;
+        case AKEYCODE_BRIGHTNESS_UP: return KEY_BRIGHTNESSUP;
+        case AKEYCODE_BRIGHTNESS_DOWN: return KEY_BRIGHTNESSDOWN;
+
         default:
             return KEY_RESERVED; // 0 (unmapped key)
     }

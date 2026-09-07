@@ -98,6 +98,12 @@ object NativeBridge {
     fun sendKeyEvent(keyCode: Int, isDown: Boolean, metaState: Int = 0, unicodeChar: Int = 0) =
         nativeSendKeyEvent(keyCode, isDown, metaState, unicodeChar)
 
+    fun resetInput() {
+        if (isLoaded) {
+            try { nativeResetInput() } catch (_: UnsatisfiedLinkError) {}
+        }
+    }
+
     // ─── Audio Bridge ──────────────────────────────────────────────────────────────
 
     fun audioStart(sampleRate: Int, channels: Int, bufferSizeFrames: Int): Boolean =
@@ -251,6 +257,7 @@ object NativeBridge {
     @JvmStatic external fun nativeSendTouchEvent(action: Int, pointerId: Int, x: Float, y: Float, pressure: Float)
     @JvmStatic external fun nativeSendMouseEvent(action: Int, buttonState: Int, x: Float, y: Float, scrollX: Float, scrollY: Float)
     @JvmStatic external fun nativeSendKeyEvent(keyCode: Int, isDown: Boolean, metaState: Int, unicodeChar: Int)
+    @JvmStatic external fun nativeResetInput()
 
     @JvmStatic external fun nativeAudioStart(sampleRate: Int, channels: Int, bufferSizeFrames: Int): Boolean
     @JvmStatic external fun nativeAudioStop()

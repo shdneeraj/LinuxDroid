@@ -43,6 +43,11 @@ class DefaultInputManager : InputManager {
         NativeBridge.sendKeyEvent(keyCode, isDown, metaState, unicodeChar)
     }
 
+    override fun resetInput() {
+        if (!active.get()) return
+        NativeBridge.resetInput()
+    }
+
     override fun setScreenBounds(widthPx: Int, heightPx: Int) {
         this.screenWidth = widthPx
         this.screenHeight = heightPx
