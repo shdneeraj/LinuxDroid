@@ -64,7 +64,6 @@ object DistributionCatalog {
     fun getDefaultCatalog(): List<DistributionDefinition> = listOf(
         getDefinition(Distribution.DEBIAN, Architecture.ARM64),
         getDefinition(Distribution.UBUNTU, Architecture.ARM64),
-        getDefinition(Distribution.KALI, Architecture.ARM64),
     )
 
     fun getDefinition(distribution: Distribution, architecture: Architecture = Architecture.ARM64): DistributionDefinition {

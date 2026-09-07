@@ -2,10 +2,10 @@ Package: linuxdroid-display-manager
 Version: 0.1.0
 Architecture: arm64
 File: linuxdroid-display-manager_0.1.0_arm64.deb
-SHA256: fef07d841071beca6d26c1809de6bfd2f4385105973c5af7c019bcc15f1043d7
+SHA256: 3055d80ad7600d151a50ebe2a8b1a20505c6dc3fe932e6c90991acdfdb24cf7b
 
 Package: linuxdroid-desktop-environment
 Version: 1.0.0
 Architecture: arm64
 File: linuxdroid-desktop-environment_1.0.0_arm64.deb
-SHA256: 57a65483efa21a79d7d2865db3c4faf042bdea08a1770b5d6b432bf335c88b9a
+SHA256: 3ed4e05dd31b7b0807b7ee6819d83e91611aea9b56538fdd1c858bbe02ceee38

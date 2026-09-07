@@ -1211,7 +1211,6 @@ private fun RootfsInstallationCard(
                         listOf(
                             Triple(Distribution.DEBIAN, "Debian (Latest)", "Recommended · Ultra-stable & low memory footprint"),
                             Triple(Distribution.UBUNTU, "Ubuntu 24.04 LTS (Noble)", "Popular · Broad software repository & developer tools"),
-                            Triple(Distribution.KALI, "Kali Linux (Rolling)", "Security · Pentesting & analysis environment"),
                         ).forEach { (distro, title, desc) ->
                             val isSelected = selectedDistro == distro
                             Surface(
