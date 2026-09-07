@@ -12,5 +12,7 @@
     "-Da64-neon=enabled",
     "-Ddemos=disabled",
     "-Dtests=disabled"
-  ]
+  ],
+  "archived": true,
+  "note": "Pre-built .so artifact (libpixman-1.so) retained in jniLibs. Source submodule (vendor/pixman) removed. Pixman is now a Linux rootfs dependency supplied by the Linux distribution package manager."
 }

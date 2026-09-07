@@ -95,19 +95,29 @@ For graphical workloads, LinuxDroid embeds the official **libweston-17 Wayland c
 
 ### 🧩 Core Stack Git Submodules (`vendor/`)
 
-LinuxDroid isolates and consumes all core native and Linux components directly from dedicated repositories under the `LinuxDroidapp` organization, pinned to exact commits:
+LinuxDroid isolates and consumes its core native components directly from dedicated repositories under the `LinuxDroidapp` organization, pinned to exact commits:
 
 | Submodule | Repository | Pinned Revision | Description |
 | :--- | :--- | :--- | :--- |
 | `vendor/proot` | [LinuxDroidapp/proot](https://github.com/LinuxDroidapp/proot) | `caadcae0e7697ec29f02e231a3a88866561aacd0` | Hardened PRoot execution engine with Bionic ptrace workarounds & TBI handling |
 | `vendor/LDDM` | [LinuxDroidapp/LDDM](https://github.com/LinuxDroidapp/LDDM) | `aa6c3d38f874244bcd60162889a914637e4ddf46` | LinuxDroid Display Manager & session coordinator |
 | `vendor/LDDE` | [LinuxDroidapp/LDDE](https://github.com/LinuxDroidapp/LDDE) | `9ee575e963d6d1ff4086fc16fb119daf6ead6db2` | LinuxDroid Desktop Environment graphical workspace |
-| `vendor/wayland` | [LinuxDroidapp/wayland](https://github.com/LinuxDroidapp/wayland) | `381af21cf84f13be0ca24aed756a9cded3290d49` | Core Wayland IPC server/client libraries |
-| `vendor/weston` | [LinuxDroidapp/weston](https://github.com/LinuxDroidapp/weston) | `9669073fe8f411ef3e9f40a36d0ec9aa68362fa2` | Embedded libweston compositor & GLES hardware renderer plugin |
-| `vendor/wayland-protocols` | [LinuxDroidapp/wayland-protocols](https://github.com/LinuxDroidapp/wayland-protocols) | `afb614d5fcbd02d261a6ae91920aa91cf3915a8a` | Wayland protocol XML extensions (xdg-shell, linux-dmabuf) |
-| `vendor/pixman` | [LinuxDroidapp/pixman](https://github.com/LinuxDroidapp/pixman) | `cc03b56c7b2b2e06199bb9b115af55f5b42b12ba` | ARM NEON-accelerated pixel manipulation library |
 
-For complete submodule management guidelines and build instructions, see [docs/vendor/submodules.md](docs/vendor/submodules.md).
+### 📦 Linux Rootfs Package Dependencies
+
+Wayland, Weston, Wayland-protocols, and Pixman are supplied by the **Linux distribution package manager** inside the rootfs. They are not Android project Git submodules.
+
+| Component | Package | Source |
+| :--- | :--- | :--- |
+| Wayland | `libwayland-dev` | Linux distribution (Debian/Ubuntu APT) |
+| Weston | `weston` | Linux distribution (Debian/Ubuntu APT) |
+| Wayland Protocols | `wayland-protocols` | Linux distribution (Debian/Ubuntu APT) |
+| Pixman | `libpixman-1-dev` | Linux distribution (Debian/Ubuntu APT) |
+
+The rootfs deployment pipeline (`linux/bootstrap`) installs these packages automatically during environment provisioning.
+
+For complete submodule management guidelines, see [docs/vendor/submodules.md](docs/vendor/submodules.md).
+
 
 ## 🏛️ Architecture
 

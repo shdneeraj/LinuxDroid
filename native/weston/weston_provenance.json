@@ -7,5 +7,7 @@
   "target_abi": "arm64-v8a",
   "target_api": 36,
   "toolchain": "/home/codespace/Android/Sdk/ndk/30.0.16138531/toolchains/llvm/prebuilt/linux-x86_64/bin",
-  "built_at": "2026-09-06T15:10:00Z"
+  "built_at": "2026-09-06T15:10:00Z",
+  "archived": true,
+  "note": "Pre-built .so artifact (libweston-17.so) retained in jniLibs. Source submodule (vendor/weston) removed. Weston is now a Linux rootfs dependency supplied by the Linux distribution package manager."
 }

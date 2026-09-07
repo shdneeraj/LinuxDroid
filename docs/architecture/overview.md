@@ -43,19 +43,19 @@ LinuxDroid is **NOT** a VM product, does **NOT** require root/su access, does **
 │   • vendor/proot (PRoot engine, loader, Android fixes) │
 │   • vendor/LDDM (LinuxDroid Display Manager)           │
 │   • vendor/LDDE (LinuxDroid Desktop Environment)       │
-│   • vendor/wayland (libwayland-server/client/cursor)   │
-│   • vendor/weston (libweston-17, gl-renderer plugin)   │
-│   • vendor/wayland-protocols (wayland protocol specs)  │
-│   • vendor/pixman (ARM NEON optimized pixel pipeline)  │
 └───────────────────────────┬────────────────────────────┘
-                            │ ptrace / syscall interception & Wayland IPC
+                            │ ptrace / syscall interception
 ┌───────────────────────────▼────────────────────────────┐
-│          Persistent Linux rootfs and applications      │
-│          (/bin/sh, apt, dpkg, Debian arm64)            │
+│    Persistent Linux rootfs and applications            │
+│    (/bin/sh, apt, dpkg, Debian arm64)                  │
+│    • Wayland  (libwayland — Linux APT package)         │
+│    • Weston   (libweston-17 — Linux APT package)       │
+│    • Pixman   (libpixman-1 — Linux APT package)        │
 └────────────────────────────────────────────────────────┘
 ```
 
-Core native and Linux stack components are maintained in dedicated repositories under `https://github.com/LinuxDroidapp/*` and consumed as Git submodules in `vendor/`. For detailed submodule specifications and commit pinning guidelines, see [docs/vendor/submodules.md](../vendor/submodules.md).
+LinuxDroid-owned components (PRoot, LDDM, LDDE) are maintained as Git submodules in `vendor/`. Wayland, Weston, and Pixman are supplied by the Linux distribution package manager inside the rootfs — they are not Android project submodules. For detailed submodule specifications, see [docs/vendor/submodules.md](../vendor/submodules.md).
+
 
 ## 3. Key Design Tenets
 1. **Unconditional Persistence:** Rootfs directories (`<filesDir>/environments/<id>/rootfs`) are never touched or purged on stop, crash, or application restart.

@@ -95,7 +95,6 @@ CMDLINE_VERSION="$CI_CMDLINE_VERSION"
 INSTALL_NDK=true
 INSTALL_CMAKE=true
 INSTALL_NATIVE_TOOLS=false
-BUILD_WESTON_STACK=false
 FORCE_REINSTALL=false
 ACCEPT_LICENSES_ONLY=false
 CHECK_ONLY=false
@@ -171,10 +170,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --with-native-tools)
             INSTALL_NATIVE_TOOLS=true
-            shift
-            ;;
-        --build-native-stack)
-            BUILD_WESTON_STACK=true
             shift
             ;;
         --force)
@@ -486,14 +481,12 @@ if [[ "$INSTALL_NATIVE_TOOLS" == true ]]; then
     log_success "Native build tools installed."
 fi
 
-if [[ "$BUILD_WESTON_STACK" == true ]]; then
-    log_step "[7/7] Building Native Wayland & Weston Stack (CI Steps 50-53)"
-    WESTON_SCRIPT="$REPO_ROOT/native/weston/build_wayland_stack.sh"
-    chmod +x "$WESTON_SCRIPT"
-    export ANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
-    "$WESTON_SCRIPT"
-    log_success "Native Wayland & Weston stack build complete."
-fi
+# NOTE: The native Wayland/Weston stack build (build_wayland_stack.sh) has been retired.
+# Weston, Wayland, and Pixman are Linux rootfs dependencies supplied by the Linux
+# distribution package manager. They are not Android project build targets.
+# Pre-built .so artifacts (libweston-17.so, libwayland-*.so, libpixman-1.so) remain
+# in app/src/main/jniLibs/arm64-v8a/ for the Android bridge library.
+
 
 # Final Summary
 log_step "Bootstrap Complete"

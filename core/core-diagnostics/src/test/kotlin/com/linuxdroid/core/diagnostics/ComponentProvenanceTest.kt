@@ -6,18 +6,17 @@ import org.junit.Test
 class ComponentProvenanceTest {
 
     @Test
-    fun testAllSevenComponentsPresentAndPinned() {
+    fun testAllThreeComponentsPresentAndPinned() {
         val manager = ComponentProvenanceManager()
         val components = manager.getComponents()
 
+        // Wayland, Weston, wayland-protocols, and pixman are Linux rootfs dependencies
+        // supplied by the Linux distribution package manager. They are not Android project
+        // Git submodules and are not tracked in components_provenance.json.
         assertThat(components.keys).containsExactly(
             "PRoot",
             "LDDM",
-            "LDDE",
-            "Wayland",
-            "Weston",
-            "wayland-protocols",
-            "pixman"
+            "LDDE"
         )
 
         val proot = manager.getComponent("PRoot")
@@ -31,22 +30,6 @@ class ComponentProvenanceTest {
         val ldde = manager.getComponent("LDDE")
         assertThat(ldde.repository).isEqualTo("LinuxDroidapp/LDDE")
         assertThat(ldde.revision).isEqualTo("9ee575e963d6d1ff4086fc16fb119daf6ead6db2")
-
-        val wayland = manager.getComponent("Wayland")
-        assertThat(wayland.repository).isEqualTo("LinuxDroidapp/wayland")
-        assertThat(wayland.revision).isEqualTo("381af21cf84f13be0ca24aed756a9cded3290d49")
-
-        val weston = manager.getComponent("Weston")
-        assertThat(weston.repository).isEqualTo("LinuxDroidapp/weston")
-        assertThat(weston.revision).isEqualTo("9669073fe8f411ef3e9f40a36d0ec9aa68362fa2")
-
-        val protocols = manager.getComponent("wayland-protocols")
-        assertThat(protocols.repository).isEqualTo("LinuxDroidapp/wayland-protocols")
-        assertThat(protocols.revision).isEqualTo("afb614d5fcbd02d261a6ae91920aa91cf3915a8a")
-
-        val pixman = manager.getComponent("pixman")
-        assertThat(pixman.repository).isEqualTo("LinuxDroidapp/pixman")
-        assertThat(pixman.revision).isEqualTo("cc03b56c7b2b2e06199bb9b115af55f5b42b12ba")
     }
 
     @Test
@@ -59,10 +42,6 @@ class ComponentProvenanceTest {
 PRoot:            LinuxDroidapp/proot@caadcae0e7697ec29f02e231a3a88866561aacd0
 LDDM:             LinuxDroidapp/LDDM@aa6c3d38f874244bcd60162889a914637e4ddf46
 LDDE:             LinuxDroidapp/LDDE@9ee575e963d6d1ff4086fc16fb119daf6ead6db2
-Wayland:          LinuxDroidapp/wayland@381af21cf84f13be0ca24aed756a9cded3290d49
-Weston:           LinuxDroidapp/weston@9669073fe8f411ef3e9f40a36d0ec9aa68362fa2
-wayland-protocols: LinuxDroidapp/wayland-protocols@afb614d5fcbd02d261a6ae91920aa91cf3915a8a
-pixman:           LinuxDroidapp/pixman@cc03b56c7b2b2e06199bb9b115af55f5b42b12ba
 """.trimIndent()
 
         assertThat(formatted.trim()).isEqualTo(expected.trim())

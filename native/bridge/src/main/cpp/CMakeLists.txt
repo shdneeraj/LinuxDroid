@@ -108,107 +108,14 @@ target_include_directories(
     ${LIBWESTON_INC_DIRS}
 )
 
-# Weston GLES Hardware Renderer Plugin (gl-renderer)
-set(WESTON_SRC "${PROJECT_ROOT}/vendor/weston")
-
-# Automatically generate shader headers into binary directory if not present
-set(SHADER_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated-shaders")
-file(MAKE_DIRECTORY "${SHADER_GEN_DIR}")
-set(VERTEX_SHADER_H "${SHADER_GEN_DIR}/vertex-shader.h")
-set(FRAGMENT_SHADER_H "${SHADER_GEN_DIR}/fragment-shader.h")
-set(WESTON_CONFIG_H "${SHADER_GEN_DIR}/config.h")
-file(WRITE "${WESTON_CONFIG_H}"
-"#pragma once
-#define ENABLE_EGL 1
-#define HAVE_LINUX_SYNC_FILE_H 1
-#define _GNU_SOURCE 1
-#ifndef program_invocation_short_name
-#define program_invocation_short_name getprogname()
-#endif
-")
-if(NOT EXISTS "${VERTEX_SHADER_H}" OR NOT EXISTS "${FRAGMENT_SHADER_H}")
-    execute_process(
-        COMMAND python3 ${WESTON_SRC}/tools/xxd.py -n vertex_shader
-                ${WESTON_SRC}/libweston/renderer-gl/vertex.glsl
-                ${VERTEX_SHADER_H}
-    )
-    execute_process(
-        COMMAND python3 ${WESTON_SRC}/tools/xxd.py -n fragment_shader
-                ${WESTON_SRC}/libweston/renderer-gl/fragment.glsl
-                ${FRAGMENT_SHADER_H}
-    )
-endif()
-
-# Resolve linux-dmabuf-unstable-v1-protocol.c
-set(DMABUF_PROTOCOL_C "")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/protocol/linux-dmabuf-unstable-v1-protocol.c")
-    set(DMABUF_PROTOCOL_C "${CMAKE_CURRENT_SOURCE_DIR}/protocol/linux-dmabuf-unstable-v1-protocol.c")
-elseif(EXISTS "${PROJECT_ROOT}/native/weston/src/weston/build-android/protocol/linux-dmabuf-unstable-v1-protocol.c")
-    set(DMABUF_PROTOCOL_C "${PROJECT_ROOT}/native/weston/src/weston/build-android/protocol/linux-dmabuf-unstable-v1-protocol.c")
-elseif(EXISTS "${WESTON_SRC}/build-android/protocol/linux-dmabuf-unstable-v1-protocol.c")
-    set(DMABUF_PROTOCOL_C "${WESTON_SRC}/build-android/protocol/linux-dmabuf-unstable-v1-protocol.c")
-endif()
-
-add_library(
-    gl-renderer SHARED
-    ${WESTON_SRC}/libweston/renderer-gl/egl-glue.c
-    ${WESTON_SRC}/libweston/renderer-gl/gl-renderer.c
-    ${WESTON_SRC}/libweston/renderer-gl/gl-shaders.c
-    ${WESTON_SRC}/libweston/renderer-gl/gl-shader-config-color-transformation.c
-    ${WESTON_SRC}/libweston/renderer-gl/gl-utils.c
-    ${WESTON_SRC}/libweston/vertex-clipping.c
-    ${DMABUF_PROTOCOL_C}
-)
-
-target_compile_definitions(
-    gl-renderer PRIVATE
-    ENABLE_EGL=1
-    HAVE_LINUX_SYNC_FILE_H=1
-    _GNU_SOURCE=1
-)
-
-target_include_directories(
-    gl-renderer PRIVATE
-    ${SHADER_GEN_DIR}
-    ${WESTON_SRC}/libweston/renderer-gl
-    ${WESTON_SRC}/libweston
-    ${WESTON_SRC}
-    ${WESTON_SRC}/include
-    ${WESTON_SRC}/build-android
-    ${WESTON_SRC}/build-android/protocol
-    ${CMAKE_CURRENT_SOURCE_DIR}/protocol
-    ${WESTON_PREFIX}/include
-    ${WESTON_PREFIX}/include/pixman-1
-    ${WESTON_PREFIX}/include/libdrm
-    ${LIBWESTON_INC_DIRS}
-)
-
-target_link_libraries(
-    gl-renderer
-    android
-    log
-    EGL
-    GLESv2
-    GLESv3
-    wayland-server
-    weston
-    pixman-1
-)
-
-set_target_properties(
-    gl-renderer PROPERTIES
-    PREFIX "lib"
-    OUTPUT_NAME "gl-renderer"
-)
-
-# Ensure output directory exists and copy to jniLibs and prefix
-file(MAKE_DIRECTORY "${WESTON_PREFIX}/lib/libweston-17")
-add_custom_command(
-    TARGET gl-renderer POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:gl-renderer> ${ARM64_JNILIBS}/libgl-renderer.so
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:gl-renderer> ${WESTON_PREFIX}/lib/libweston-17/gl-renderer.so
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:gl-renderer> ${WESTON_PREFIX}/lib/libweston-17/libgl-renderer.so
-)
+# gl-renderer: pre-built Weston GLES renderer plugin artifact.
+# Source build removed: vendor/weston submodule has been retired.
+# Weston (and its gl-renderer plugin) is a Linux rootfs dependency supplied
+# by the Linux distribution package manager, not an Android project build target.
+# The pre-built libgl-renderer.so artifact resides in jniLibs and is packaged
+# into the APK via the standard jniLibs mechanism.
+add_library(gl-renderer SHARED IMPORTED)
+set_target_properties(gl-renderer PROPERTIES IMPORTED_LOCATION ${ARM64_JNILIBS}/libgl-renderer.so)
 
 # Standalone native GUI host test executable (minimal Phase 3 validation)
 add_executable(

@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
+# =============================================================================
+# LEGACY — RETIRED SCRIPT
+# =============================================================================
+# This script built the Wayland/Weston/Pixman stack from Android NDK source
+# using the vendor/wayland, vendor/weston, and vendor/pixman Git submodules.
+#
+# These submodules have been removed. Weston, Wayland, and Pixman are now
+# Linux rootfs dependencies supplied by the Linux distribution package manager.
+# They are not Android project build targets.
+#
+# Pre-built .so artifacts (libweston-17.so, libwayland-*.so, libpixman-1.so)
+# remain in app/src/main/jniLibs/arm64-v8a/ and native/weston/prefix/ for
+# use by the Android bridge library (native/bridge).
+#
+# Do NOT run this script. It will fail because vendor/weston is no longer present.
+# =============================================================================
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"

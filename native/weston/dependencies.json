@@ -48,11 +48,9 @@
     },
     "wayland": {
       "name": "wayland",
-      "source_repository": "https://github.com/LinuxDroidapp/wayland.git",
       "upstream_repository": "https://gitlab.freedesktop.org/wayland/wayland.git",
       "branch": "main",
       "release": "1.26.0",
-      "vendor_path": "vendor/wayland",
       "resolved_commit": "381af21cf84f13be0ca24aed756a9cded3290d49",
       "build_system": "meson",
       "build_options": [
@@ -62,29 +60,29 @@
         "-Ddtd_validation=false",
         "-Dtests=false"
       ],
-      "runtime_library": "libwayland-server.so"
+      "runtime_library": "libwayland-server.so",
+      "source": "linux_distribution",
+      "note": "Supplied by Linux rootfs package manager. Not an Android project source dependency."
     },
     "wayland-protocols": {
       "name": "wayland-protocols",
-      "source_repository": "https://github.com/LinuxDroidapp/wayland-protocols.git",
       "upstream_repository": "https://gitlab.freedesktop.org/wayland/wayland-protocols.git",
       "branch": "main",
       "release": "1.49",
-      "vendor_path": "vendor/wayland-protocols",
       "resolved_commit": "afb614d5fcbd02d261a6ae91920aa91cf3915a8a",
       "build_system": "meson",
       "build_options": [
         "-Dtests=false"
       ],
-      "runtime_library": null
+      "runtime_library": null,
+      "source": "linux_distribution",
+      "note": "Supplied by Linux rootfs package manager. Not an Android project source dependency."
     },
     "pixman": {
       "name": "pixman",
-      "source_repository": "https://github.com/LinuxDroidapp/pixman.git",
       "upstream_repository": "https://gitlab.freedesktop.org/pixman/pixman.git",
       "branch": "main",
       "release": "0.46.4",
-      "vendor_path": "vendor/pixman",
       "resolved_commit": "cc03b56c7b2b2e06199bb9b115af55f5b42b12ba",
       "build_system": "meson",
       "build_options": [
@@ -92,7 +90,9 @@
         "-Ddemos=disabled",
         "-Dtests=disabled"
       ],
-      "runtime_library": "libpixman-1.so"
+      "runtime_library": "libpixman-1.so",
+      "source": "linux_distribution",
+      "note": "Supplied by Linux rootfs package manager. Not an Android project source dependency."
     },
     "libxkbcommon": {
       "name": "libxkbcommon",
@@ -152,11 +152,9 @@
     },
     "weston": {
       "name": "weston",
-      "source_repository": "https://github.com/LinuxDroidapp/weston.git",
       "upstream_repository": "https://gitlab.freedesktop.org/wayland/weston.git",
       "branch": "main",
       "release": "main",
-      "vendor_path": "vendor/weston",
       "resolved_commit": "9669073fe8f411ef3e9f40a36d0ec9aa68362fa2",
       "libweston_major": 17,
       "build_system": "meson",
@@ -187,7 +185,9 @@
         "-Dtests=false",
         "-Dperfetto=false"
       ],
-      "runtime_library": "libweston-17.so"
+      "runtime_library": "libweston-17.so",
+      "source": "linux_distribution",
+      "note": "Supplied by Linux rootfs package manager. Not an Android project source dependency."
     }
   }
 }

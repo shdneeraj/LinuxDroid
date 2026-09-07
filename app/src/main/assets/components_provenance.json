@@ -16,26 +16,32 @@
       "repository": "LinuxDroidapp/LDDE",
       "vendor_path": "vendor/LDDE",
       "revision": "9ee575e963d6d1ff4086fc16fb119daf6ead6db2"
-    },
-    "Wayland": {
-      "repository": "LinuxDroidapp/wayland",
-      "vendor_path": "vendor/wayland",
-      "revision": "381af21cf84f13be0ca24aed756a9cded3290d49"
-    },
-    "Weston": {
-      "repository": "LinuxDroidapp/weston",
-      "vendor_path": "vendor/weston",
-      "revision": "9669073fe8f411ef3e9f40a36d0ec9aa68362fa2"
-    },
-    "wayland-protocols": {
-      "repository": "LinuxDroidapp/wayland-protocols",
-      "vendor_path": "vendor/wayland-protocols",
-      "revision": "afb614d5fcbd02d261a6ae91920aa91cf3915a8a"
-    },
-    "pixman": {
-      "repository": "LinuxDroidapp/pixman",
-      "vendor_path": "vendor/pixman",
-      "revision": "cc03b56c7b2b2e06199bb9b115af55f5b42b12ba"
     }
-  }
+  },
+  "linux_rootfs_packages": [
+    {
+      "name": "wayland",
+      "source": "linux_distribution",
+      "package": "libwayland-dev",
+      "note": "Provided by Linux rootfs package manager. Not an Android project dependency."
+    },
+    {
+      "name": "wayland-protocols",
+      "source": "linux_distribution",
+      "package": "wayland-protocols",
+      "note": "Provided by Linux rootfs package manager. Not an Android project dependency."
+    },
+    {
+      "name": "weston",
+      "source": "linux_distribution",
+      "package": "weston",
+      "note": "Provided by Linux rootfs package manager. Not an Android project dependency."
+    },
+    {
+      "name": "pixman",
+      "source": "linux_distribution",
+      "package": "libpixman-1-dev",
+      "note": "Provided by Linux rootfs package manager. Not an Android project dependency."
+    }
+  ]
 }
