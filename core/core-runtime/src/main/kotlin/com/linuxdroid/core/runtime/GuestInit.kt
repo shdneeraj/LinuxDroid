@@ -78,6 +78,22 @@ export LANG="§{LANG:-C.UTF-8}"
 export LC_ALL="§{LC_ALL:-C.UTF-8}"
 export TMPDIR="/tmp"
 
+# Establish compliant XDG_RUNTIME_DIR (/run/user/<uid>) with strict 0700 permissions
+USER_UID=§(id -u 2>/dev/null || echo 0)
+if [ -z "§{XDG_RUNTIME_DIR:-}" ] || [ "§{XDG_RUNTIME_DIR}" = "/tmp" ]; then
+    export XDG_RUNTIME_DIR="/run/user/§{USER_UID}"
+fi
+if [ ! -d "§{XDG_RUNTIME_DIR}" ]; then
+    mkdir -p "§{XDG_RUNTIME_DIR}" 2>/dev/null || true
+fi
+chmod 0700 "§{XDG_RUNTIME_DIR}" 2>/dev/null || true
+
+export WAYLAND_DISPLAY="§{WAYLAND_DISPLAY:-wayland-0}"
+export DISPLAY="§{DISPLAY:-:0}"
+export XDG_SESSION_TYPE="§{XDG_SESSION_TYPE:-wayland}"
+export XDG_CURRENT_DESKTOP="§{XDG_CURRENT_DESKTOP:-LDDE}"
+export XDG_SESSION_DESKTOP="§{XDG_SESSION_DESKTOP:-LDDE}"
+
 # Scrub Android host environment leakage if present
 unset ANDROID_ROOT ANDROID_DATA ANDROID_STORAGE ASEC_MOUNTPOINT BOOTCLASSPATH DEX2OATBOOTCLASSPATH EXTERNAL_STORAGE
 
@@ -96,6 +112,7 @@ if [ -d "§HOOKS_DIR" ]; then
 fi
 
 # 4. Hand over to requested workload
+echo "[INFO] Guest ready"
 if [ §# -gt 0 ]; then
     init_log "Handing over to requested workload: §1"
     exec "§@"

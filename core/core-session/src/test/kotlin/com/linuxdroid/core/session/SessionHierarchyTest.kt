@@ -87,7 +87,7 @@ class SessionHierarchyTest {
         )
 
         val activeSession = session.start()
-        assertThat(activeSession.state).isEqualTo(SessionState.RUNNING)
+        assertThat(activeSession.state).isEqualTo(SessionState.GUI_READY)
         assertThat(activeSession.runtimePid).isEqualTo(9999)
         assertThat(activeSession.waylandSocket).isEqualTo("wayland-0")
     }

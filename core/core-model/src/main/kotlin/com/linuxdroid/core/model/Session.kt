@@ -20,14 +20,30 @@ value class SessionId(val value: String) {
 enum class SessionState {
     /** Session is being created. */
     INITIALIZING,
-    /** Runtime is starting. */
-    STARTING_RUNTIME,
-    /** Wayland compositor is starting. */
-    STARTING_COMPOSITOR,
-    /** Desktop environment is starting. */
-    STARTING_DESKTOP,
-    /** Session is fully active. */
+    /** Session startup in progress. */
+    STARTING,
+    /** Guest runtime and PRoot are validated and running. */
+    GUEST_READY,
+    /** LDDM display manager is starting. */
+    LDDM_STARTING,
+    /** Weston Wayland compositor is starting. */
+    WESTON_STARTING,
+    /** Weston Wayland compositor is running and socket is usable. */
+    WESTON_READY,
+    /** LDDE desktop environment is starting. */
+    LDDE_STARTING,
+    /** LDDE desktop environment has established operational readiness. */
+    LDDE_READY,
+    /** Complete graphical session is operational (Guest + LDDM + Weston + LDDE). */
+    GUI_READY,
+    /** Backward compatibility alias for GUI_READY / active session. */
     RUNNING,
+    /** Backward compatibility alias for STARTING / GUEST_READY. */
+    STARTING_RUNTIME,
+    /** Backward compatibility alias for WESTON_STARTING. */
+    STARTING_COMPOSITOR,
+    /** Backward compatibility alias for LDDE_STARTING. */
+    STARTING_DESKTOP,
     /** Session is shutting down. */
     STOPPING,
     /** Session stopped cleanly. */
@@ -35,8 +51,22 @@ enum class SessionState {
     /** Session failed. */
     FAILED;
 
-    fun isActive(): Boolean = this in setOf(INITIALIZING, STARTING_RUNTIME,
-        STARTING_COMPOSITOR, STARTING_DESKTOP, RUNNING, STOPPING)
+    fun isActive(): Boolean = this in setOf(
+        INITIALIZING,
+        STARTING,
+        GUEST_READY,
+        LDDM_STARTING,
+        WESTON_STARTING,
+        WESTON_READY,
+        LDDE_STARTING,
+        LDDE_READY,
+        GUI_READY,
+        RUNNING,
+        STARTING_RUNTIME,
+        STARTING_COMPOSITOR,
+        STARTING_DESKTOP,
+        STOPPING,
+    )
 }
 
 /**

@@ -528,6 +528,21 @@ guest_install_graphics_stack() {
         "${weston_pkgs[@]}" \
         fonts-dejavu-core
 
+    mkdir -p /etc/xdg/weston
+    if [[ ! -f /etc/xdg/weston/weston.ini ]]; then
+        cat <<'EOF' > /etc/xdg/weston/weston.ini
+# LinuxDroid Default Weston Configuration
+[core]
+idle-time=0
+require-input=false
+backend=headless-backend.so
+
+[shell]
+locking=false
+EOF
+        chmod 0644 /etc/xdg/weston/weston.ini
+    fi
+
     log_pass "[Guest] Wayland and Weston packages installed."
 }
 
@@ -594,7 +609,45 @@ guest_install_bundled_packages() {
     guest_install_deb_idempotent "linuxdroid-display-manager" "${lddm_deb}"
     guest_install_deb_idempotent "linuxdroid-desktop-environment" "${ldde_deb}"
 
-    log_pass "[Guest] Bundled LinuxDroid packages installed."
+    mkdir -p /etc/linuxdroid
+    cat <<EOF > /etc/linuxdroid/lddm.conf
+# LinuxDroid Display Manager Configuration
+[server]
+socket_path = /run/lddm/lddm.sock
+runtime_dir = /run/lddm
+pid_file = /run/lddm/lddm.pid
+
+[session]
+default_user = ${USERNAME:-root}
+session_type = wayland
+display_number = 0
+wayland_display = wayland-0
+
+[weston]
+executable = /usr/bin/weston
+config_path = /etc/xdg/weston/weston.ini
+socket_name = wayland-0
+backend = headless-backend.so
+
+[ldde]
+executable = /usr/bin/ldde
+session_target = default
+autostart = true
+
+[process]
+startup_timeout_ms = 10000
+stop_timeout_ms = 5000
+max_restart_count = 3
+restart_window_seconds = 60
+EOF
+    chmod 0644 /etc/linuxdroid/lddm.conf
+
+    # Ensure compatibility symlink ldde-session -> ldde
+    if [[ -x /usr/bin/ldde && ! -e /usr/bin/ldde-session ]]; then
+        ln -sf /usr/bin/ldde /usr/bin/ldde-session
+    fi
+
+    log_pass "[Guest] Bundled LinuxDroid packages installed and configured."
 }
 
 guest_configure_user() {

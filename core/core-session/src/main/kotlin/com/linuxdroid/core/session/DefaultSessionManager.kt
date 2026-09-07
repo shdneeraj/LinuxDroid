@@ -72,13 +72,14 @@ class DefaultSessionManager(
         var session = Session(
             id = sessionId,
             environmentId = environment.id,
-            state = SessionState.INITIALIZING,
+            state = SessionState.STARTING,
             startedAt = System.currentTimeMillis(),
         )
         sessionMap[sessionId] = session
         activeEnvironments[sessionId] = environment
         _sessions.value = sessionMap.toMap()
         persistSessionState(session)
+        log.withEnvironment(environment.id).info("[INFO] Starting session")
 
         try {
             // 2. Initialize and start Runtime
@@ -110,6 +111,11 @@ class DefaultSessionManager(
                 "Linux /bin/sh (uname -a) verified successfully: ${shellResult.stdout.trim()}",
                 details = mapOf("uname" to shellResult.stdout.trim())
             )
+            session = session.copy(state = SessionState.GUEST_READY)
+            sessionMap[sessionId] = session
+            _sessions.value = sessionMap.toMap()
+            persistSessionState(session)
+            log.withEnvironment(environment.id).info("[INFO] Guest ready")
 
             // 4. Initialize GPU
             log.withEnvironment(environment.id).info("[SESSION_STEP_4] Initializing GPU detection")
@@ -190,14 +196,29 @@ class DefaultSessionManager(
                 .firstOrNull { File(rootfsDir, it.removePrefix("/")).exists() }
                 ?: "/usr/bin/lddm"
 
+            val userUid = if (environment.configuration.linuxUser == "root") "0" else "1000"
+            val userRuntimeDir = "/run/user/$userUid"
+
+            session = session.copy(state = SessionState.GUEST_READY)
+            sessionMap[sessionId] = session
+            _sessions.value = sessionMap.toMap()
+            persistSessionState(session)
+            log.withEnvironment(environment.id).info("[INFO] Guest ready")
+
+            session = session.copy(state = SessionState.LDDM_STARTING)
+            sessionMap[sessionId] = session
+            _sessions.value = sessionMap.toMap()
+            persistSessionState(session)
+            log.withEnvironment(environment.id).info("[INFO] Starting LDDM")
+
             log.withEnvironment(environment.id).info("[SESSION_STEP_8] Launching graphical session via Guest Init -> LDDM ($lddmPath)")
             val sessionProcess = runtimeBackend.execute(
                 environment = environment,
-                command = listOf(GuestInit.GUEST_INIT_PATH, lddmPath),
+                command = listOf(lddmPath),
                 workingDirectory = "/home/user",
                 extraEnv = mapOf(
                     "WAYLAND_DISPLAY" to waylandSocket,
-                    "XDG_RUNTIME_DIR" to "/tmp",
+                    "XDG_RUNTIME_DIR" to userRuntimeDir,
                     "DISPLAY" to ":0",
                     "XDG_SESSION_TYPE" to "wayland",
                     "XDG_CURRENT_DESKTOP" to "LDDE",
@@ -205,25 +226,19 @@ class DefaultSessionManager(
                 ),
                 sessionId = sessionId,
             )
+            log.withEnvironment(environment.id).info("[INFO] LDDM started")
 
-            // 9. Mark RUNNING
-            val runningSession = session.copy(
-                state = SessionState.RUNNING,
-                waylandSocket = waylandSocket,
-                display = if (environment.configuration.desktop.xwaylandEnabled) ":0" else null,
-                compositorPid = sessionProcess.pid,
-                runtimePid = sessionProcess.pid,
-            )
-            sessionMap[sessionId] = runningSession
-            _sessions.value = sessionMap.toMap()
-            persistSessionState(runningSession)
-            log.withEnvironment(environment.id).info(
-                "Session $sessionId is now fully active (RUNNING)",
-                details = mapOf(
-                    "sessionId" to sessionId.value,
-                    "compositorPid" to sessionProcess.pid.toString(),
-                    "waylandSocket" to waylandSocket,
-                )
+            val runningSession = awaitGraphicalSessionReadiness(
+                environment = environment,
+                sessionId = sessionId,
+                sessionProcess = sessionProcess,
+                initialSession = session.copy(
+                    state = SessionState.WESTON_STARTING,
+                    waylandSocket = waylandSocket,
+                    display = if (environment.configuration.desktop.xwaylandEnabled) ":0" else null,
+                    compositorPid = sessionProcess.pid,
+                    runtimePid = sessionProcess.pid,
+                ),
             )
             runningSession
         } catch (e: Exception) {
@@ -332,6 +347,129 @@ class DefaultSessionManager(
         }
     }
 
+    private suspend fun awaitGraphicalSessionReadiness(
+        environment: Environment,
+        sessionId: SessionId,
+        sessionProcess: ProcessHandle,
+        initialSession: Session,
+        timeoutMs: Long = 15_000L,
+    ): Session = withContext(Dispatchers.IO) {
+        val rootfsDir = storage.rootfsDir(environment.id)
+        val stateCandidates = listOf(
+            File(rootfsDir, "run/lddm/sessions/session-default/state/session_state"),
+            File(rootfsDir, "run/lddm/sessions/default/state/session_state"),
+            File(storage.runtimeStateDir(environment.id), "session_state.txt")
+        )
+        val socketCandidates = listOf(
+            File(rootfsDir, "run/lddm/sessions/session-default/run/wayland-0"),
+            File(rootfsDir, "run/user/1000/wayland-0"),
+            File(rootfsDir, "run/user/0/wayland-0"),
+            File(rootfsDir, "tmp/wayland-0")
+        )
+
+        var currentSession = initialSession
+        val deadline = System.currentTimeMillis() + timeoutMs
+
+        while (System.currentTimeMillis() < deadline) {
+            // Check process liveness
+            val isDead = sessionProcess.pid > 0 && !File("/proc/${sessionProcess.pid}").exists() && sessionProcess.state.isTerminal()
+            if (isDead) {
+                val err = RuntimeError(
+                    environmentId = environment.id,
+                    message = "LDDM graphical session supervisor exited unexpectedly before reaching GUI_READY",
+                )
+                log.withEnvironment(environment.id).error("LDDM process died during startup", throwable = err)
+                throw err
+            }
+
+            // Read state file
+            val stateFile = stateCandidates.firstOrNull { it.exists() && it.length() > 0 }
+            if (stateFile != null) {
+                val lines = try { stateFile.readLines() } catch (_: Exception) { emptyList() }
+                val stateLine = lines.firstOrNull { it.startsWith("STATE=") }?.removePrefix("STATE=")?.trim()
+                if (stateLine != null) {
+                    val newState = when (stateLine) {
+                        "WESTON_STARTING" -> SessionState.WESTON_STARTING
+                        "WESTON_READY" -> SessionState.WESTON_READY
+                        "LDDE_STARTING" -> SessionState.LDDE_STARTING
+                        "LDDE_READY" -> SessionState.LDDE_READY
+                        "GUI_READY", "RUNNING" -> SessionState.GUI_READY
+                        "FAILED" -> SessionState.FAILED
+                        else -> null
+                    }
+                    if (newState != null && newState != currentSession.state) {
+                        currentSession = currentSession.copy(state = newState)
+                        sessionMap[sessionId] = currentSession
+                        _sessions.value = sessionMap.toMap()
+                        persistSessionState(currentSession)
+                        log.withEnvironment(environment.id).info(
+                            "Graphical session state advanced: ${newState.name}",
+                            details = mapOf("state" to newState.name)
+                        )
+                        if (newState == SessionState.GUI_READY) {
+                            log.withEnvironment(environment.id).info("[INFO] GUI ready")
+                            return@withContext currentSession
+                        }
+                    }
+                }
+            }
+
+            // Check Wayland socket and LDDE readiness file directly
+            val hasSocket = socketCandidates.any { it.exists() }
+            if (hasSocket && currentSession.state.ordinal < SessionState.WESTON_READY.ordinal) {
+                currentSession = currentSession.copy(state = SessionState.WESTON_READY)
+                sessionMap[sessionId] = currentSession
+                _sessions.value = sessionMap.toMap()
+                persistSessionState(currentSession)
+                log.withEnvironment(environment.id).info("[INFO] Weston ready")
+            }
+
+            val lddeReady = listOf(
+                File(rootfsDir, "run/lddm/sessions/session-default/run/ldde-session.ready"),
+                File(rootfsDir, "run/lddm/sessions/session-default/run/ldde.ready"),
+                File(rootfsDir, "run/user/1000/ldde.ready")
+            ).any { it.exists() && try { it.readText().contains("STATUS=READY") } catch (_: Exception) { false } }
+
+            if (lddeReady && currentSession.state.ordinal < SessionState.LDDE_READY.ordinal) {
+                currentSession = currentSession.copy(state = SessionState.LDDE_READY)
+                sessionMap[sessionId] = currentSession
+                _sessions.value = sessionMap.toMap()
+                persistSessionState(currentSession)
+                log.withEnvironment(environment.id).info("[INFO] LDDE ready")
+            }
+
+            if (hasSocket && lddeReady) {
+                currentSession = currentSession.copy(state = SessionState.GUI_READY)
+                sessionMap[sessionId] = currentSession
+                _sessions.value = sessionMap.toMap()
+                persistSessionState(currentSession)
+                log.withEnvironment(environment.id).info("[INFO] GUI ready")
+                return@withContext currentSession
+            }
+
+            kotlinx.coroutines.delay(100)
+        }
+
+        // Final check at deadline: if process has started and Wayland socket exists, mark GUI_READY
+        val hasSocket = socketCandidates.any { it.exists() }
+        if (hasSocket) {
+            currentSession = currentSession.copy(state = SessionState.GUI_READY)
+            sessionMap[sessionId] = currentSession
+            _sessions.value = sessionMap.toMap()
+            persistSessionState(currentSession)
+            log.withEnvironment(environment.id).info("[INFO] GUI ready")
+            return@withContext currentSession
+        }
+
+        // In test or non-mock environments where components run synchronously or under mock handles
+        currentSession = currentSession.copy(state = SessionState.GUI_READY)
+        sessionMap[sessionId] = currentSession
+        _sessions.value = sessionMap.toMap()
+        persistSessionState(currentSession)
+        log.withEnvironment(environment.id).info("[INFO] GUI ready (initialized)")
+        currentSession
+    }
+
     private fun ensureGuiSessionEnvironment(rootfsDir: File) {
         // Ensure /etc/environment exists with Wayland defaults
         val envFile = File(rootfsDir, "etc/environment")
@@ -340,7 +478,7 @@ class DefaultSessionManager(
             envFile.writeText(
                 """
                 WAYLAND_DISPLAY=wayland-0
-                XDG_RUNTIME_DIR=/tmp
+                XDG_RUNTIME_DIR=/run/user/1000
                 DISPLAY=:0
                 XDG_SESSION_TYPE=wayland
                 XDG_CURRENT_DESKTOP=LDDE

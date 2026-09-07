@@ -52,13 +52,16 @@ class DesktopSession(
             .firstOrNull { File(rootfsDir, it.removePrefix("/")).exists() }
             ?: "/usr/bin/lddm"
 
+        val userUid = if (environment.configuration.linuxUser == "root") "0" else "1000"
+        val userRuntimeDir = "/run/user/$userUid"
+
         val spec = RuntimeSpec.fromEnvironment(
             environment = environment,
-            command = listOf(GuestInit.GUEST_INIT_PATH, lddmPath),
+            command = listOf(lddmPath),
             workingDirectory = "/home/user",
             extraEnv = mapOf(
                 "WAYLAND_DISPLAY" to waylandSocket,
-                "XDG_RUNTIME_DIR" to "/tmp",
+                "XDG_RUNTIME_DIR" to userRuntimeDir,
                 "DISPLAY" to ":0",
                 "XDG_SESSION_TYPE" to "wayland",
                 "XDG_CURRENT_DESKTOP" to "LDDE",
@@ -71,7 +74,7 @@ class DesktopSession(
         Session(
             id = sessionId,
             environmentId = environment.id,
-            state = SessionState.RUNNING,
+            state = SessionState.GUI_READY,
             waylandSocket = waylandSocket,
             display = if (environment.configuration.desktop.xwaylandEnabled) ":0" else null,
             compositorPid = procHandle.pid,
@@ -97,7 +100,7 @@ class DesktopSession(
             envFile.writeText(
                 """
                 WAYLAND_DISPLAY=wayland-0
-                XDG_RUNTIME_DIR=/tmp
+                XDG_RUNTIME_DIR=/run/user/1000
                 DISPLAY=:0
                 XDG_SESSION_TYPE=wayland
                 XDG_CURRENT_DESKTOP=LDDE
