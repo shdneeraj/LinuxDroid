@@ -83,6 +83,18 @@ class EnvironmentStorage(
     /** Returns the diagnostics summary log file. */
     fun diagnosticsLogFile(id: EnvironmentId): File = File(logsDir(id), LogCategory.DIAGNOSTICS.filename)
 
+    /** Returns the dedicated rootfs installation directory. */
+    fun installationDir(id: EnvironmentId): File = File(environmentDir(id), "installation")
+
+    /** Returns the dedicated rootfs installation log file. */
+    fun installationLogFile(id: EnvironmentId): File = File(installationDir(id), "install.log")
+
+    /** Returns the persistent installation state file. */
+    fun installationStateFile(id: EnvironmentId): File = File(installationDir(id), "install-state")
+
+    /** Returns the persistent installation metadata file. */
+    fun installationMetadataFile(id: EnvironmentId): File = File(installationDir(id), "install-metadata")
+
     /** Returns all available categorized log files for the environment. */
     fun allLogFiles(id: EnvironmentId): List<File> = listOf(
         sessionLogFile(id),
@@ -93,6 +105,7 @@ class EnvironmentStorage(
         prootLogFile(id),
         consoleLogFile(id),
         diagnosticsLogFile(id),
+        installationLogFile(id),
     )
 
     /**
@@ -101,7 +114,7 @@ class EnvironmentStorage(
      */
     suspend fun initializeEnvironmentDirs(id: EnvironmentId) = withContext(Dispatchers.IO) {
         log.info("Initializing environment directories for $id")
-        listOf(metadataDir(id), runtimeStateDir(id), tmpDir(id), logsDir(id), shmDir(id)).forEach { dir ->
+        listOf(metadataDir(id), runtimeStateDir(id), tmpDir(id), logsDir(id), shmDir(id), installationDir(id)).forEach { dir ->
             if (!dir.exists() && !dir.mkdirs()) {
                 throw FilesystemError(dir.path, "Failed to create directory")
             }

@@ -51,13 +51,34 @@ enum class RootfsDeploymentState(val displayName: String) {
     /** Comprehensive end-to-end validation of the complete graphical stack. */
     ROOTFS_VALIDATING("Validating graphical Linux stack"),
 
+    /** Pre-install: Initial archive acquisition, extraction, and base filesystem preparation. */
+    PRE_INSTALLING("Pre-installing base root filesystem"),
+
+    /** Pre-install completed: base rootfs extracted, LDDM/LDDE staged, install.conf written. */
+    PRE_INSTALL_READY("Pre-install ready"),
+
+    /** Post-install: Starting Linux userspace CLI post-install session. */
+    POST_INSTALL_STARTING("Starting post-install environment"),
+
+    /** Post-install: In-guest package and user configuration in progress. */
+    POST_INSTALLING("Executing guest post-install configuration"),
+
+    /** Post-install: In-guest execution failed. */
+    POST_INSTALL_FAILED("Post-install configuration failed"),
+
+    /** Post-install: Completed successfully inside Linux userspace. */
+    POST_INSTALL_COMPLETE("Post-install configuration complete"),
+
+    /** Full installation completed and environment is ready for normal usage. */
+    INSTALLATION_COMPLETE("Installation complete"),
+
     /** Rootfs is complete, fully verified, and ready to run. */
     ROOTFS_READY("Root filesystem ready"),
 
     /** Deployment failed; rootfs is incomplete and unusable. */
     ROOTFS_DEPLOYMENT_FAILED("Root filesystem deployment failed");
 
-    fun isReady(): Boolean = this == ROOTFS_READY
-    fun isFailed(): Boolean = this == ROOTFS_DEPLOYMENT_FAILED
+    fun isReady(): Boolean = this == ROOTFS_READY || this == INSTALLATION_COMPLETE
+    fun isFailed(): Boolean = this == ROOTFS_DEPLOYMENT_FAILED || this == POST_INSTALL_FAILED
 }
 

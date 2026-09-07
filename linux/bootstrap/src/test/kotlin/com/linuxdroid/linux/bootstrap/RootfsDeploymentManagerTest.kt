@@ -1024,4 +1024,268 @@ class RootfsDeploymentManagerTest {
             server.stop(0)
         }
     }
+
+    // =========================================================================
+    // TEST 21: Pre-Install Phase Separation and Staging Validation
+    // =========================================================================
+    @Test
+    fun `TEST 21 - Pre-install marks PRE_INSTALL_READY, stages deb packages, and does not install desktop or create users`() = runBlocking {
+        val rootfsDir = tempFolder.newFolder("pre-install-rootfs")
+        populateMockRootfs(rootfsDir, withWayland = true, withWeston = true, withLddm = false, withLdde = false)
+
+        val lddmDeb = tempFolder.newFile("lddm-p21.deb")
+        createMockDeb(
+            destFile = lddmDeb,
+            packageName = "linuxdroid-display-manager",
+            version = "1.0.0",
+            files = mapOf("usr/bin/lddm" to "LDDM_BIN"),
+        )
+        val lddeDeb = tempFolder.newFile("ldde-p21.deb")
+        createMockDeb(
+            destFile = lddeDeb,
+            packageName = "linuxdroid-desktop-environment",
+            version = "1.0.0",
+            files = mapOf("usr/bin/ldde" to "LDDE_BIN"),
+        )
+
+        val storage = mockk<EnvironmentStorage>(relaxed = true)
+        every { storage.rootfsDir(testEnvId) } returns rootfsDir
+        every { storage.stagingRootfsDir(testEnvId) } returns rootfsDir
+        every { storage.logsDir(testEnvId) } returns tempFolder.newFolder("logs-21")
+        every { storage.metadataDir(testEnvId) } returns tempFolder.newFolder("meta-21")
+
+        val deploymentManager = RootfsDeploymentManager(
+            storage = storage,
+            validator = validator,
+            extractor = extractor,
+            configurator = configurator,
+            runtimeSetup = runtimeSetup,
+        )
+
+        val config = InstallConfig(
+            distro = Distribution.DEBIAN,
+            release = "trixie",
+            username = "developer",
+            password = "SecretPassword123",
+        )
+
+        val readyRootfs = deploymentManager.executePreInstall(
+            environment = testEnv,
+            installConfig = config,
+            lddmDebOverride = lddmDeb,
+            lddeDebOverride = lddeDeb,
+        )
+
+        // 1. Verify PRE_INSTALL_READY marker exists
+        val preMarker = File(readyRootfs, "etc/linuxdroid/PRE_INSTALL_READY")
+        assertThat(preMarker.exists()).isTrue()
+        val preContent = preMarker.readText()
+        assertThat(preContent).contains("STATUS=PRE_INSTALL_READY")
+        assertThat(preContent).contains("USERNAME=developer")
+
+        // 2. Verify staged debs exist in /root/.linuxdroid/packages
+        val stagedPkgsDir = File(readyRootfs, "root/.linuxdroid/packages")
+        assertThat(File(stagedPkgsDir, "linuxdroid-display-manager.deb").exists()).isTrue()
+        assertThat(File(stagedPkgsDir, "LDDM.deb").exists()).isTrue()
+        assertThat(File(stagedPkgsDir, "linuxdroid-desktop-environment.deb").exists()).isTrue()
+        assertThat(File(stagedPkgsDir, "LDDE.deb").exists()).isTrue()
+
+        // 3. Verify install.conf, .install.secret, post-install.sh exist
+        assertThat(File(readyRootfs, "etc/linuxdroid/install.conf").exists()).isTrue()
+        assertThat(File(readyRootfs, "etc/linuxdroid/.install.secret").exists()).isTrue()
+        val postScript = File(readyRootfs, "etc/linuxdroid/post-install.sh")
+        assertThat(postScript.exists()).isTrue()
+        assertThat(postScript.canExecute()).isTrue()
+
+        // 4. Critical requirement: Pre-install MUST NOT install desktop packages or create users
+        assertThat(File(readyRootfs, "usr/bin/lddm").exists()).isFalse()
+        assertThat(File(readyRootfs, "usr/bin/ldde").exists()).isFalse()
+        assertThat(File(readyRootfs, "home/developer").exists()).isFalse()
+        assertThat(File(readyRootfs, "etc/sudoers.d/010_developer-nopasswd").exists()).isFalse()
+        assertThat(File(readyRootfs, "etc/linuxdroid/POST_INSTALL_COMPLETE").exists()).isFalse()
+    }
+
+    // =========================================================================
+    // TEST 22: Post-Install Execution and Cleanup
+    // =========================================================================
+    @Test
+    fun `TEST 22 - Post-install executes, configures user and sudoers, cleans secrets, and marks POST_INSTALL_COMPLETE`() = runBlocking {
+        val rootfsDir = tempFolder.newFolder("post-install-rootfs")
+        populateMockRootfs(rootfsDir, withWayland = true, withWeston = true, withLddm = false, withLdde = false)
+
+        val lddmDeb = tempFolder.newFile("lddm-p22.deb")
+        createMockDeb(
+            destFile = lddmDeb,
+            packageName = "linuxdroid-display-manager",
+            version = "1.0.0",
+            files = mapOf("usr/bin/lddm" to "LDDM_BIN"),
+        )
+        val lddeDeb = tempFolder.newFile("ldde-p22.deb")
+        createMockDeb(
+            destFile = lddeDeb,
+            packageName = "linuxdroid-desktop-environment",
+            version = "1.0.0",
+            files = mapOf("usr/bin/ldde" to "LDDE_BIN"),
+        )
+
+        val storage = mockk<EnvironmentStorage>(relaxed = true)
+        every { storage.rootfsDir(testEnvId) } returns rootfsDir
+        every { storage.stagingRootfsDir(testEnvId) } returns rootfsDir
+        every { storage.logsDir(testEnvId) } returns tempFolder.newFolder("logs-22")
+        every { storage.metadataDir(testEnvId) } returns tempFolder.newFolder("meta-22")
+
+        val deploymentManager = RootfsDeploymentManager(
+            storage = storage,
+            validator = validator,
+            extractor = extractor,
+            configurator = configurator,
+            runtimeSetup = runtimeSetup,
+        )
+
+        val config = InstallConfig(
+            distro = Distribution.DEBIAN,
+            release = "trixie",
+            username = "developer",
+            password = "SecretPassword123",
+        )
+
+        // Run Pre-Install first
+        deploymentManager.executePreInstall(
+            environment = testEnv,
+            installConfig = config,
+            lddmDebOverride = lddmDeb,
+            lddeDebOverride = lddeDeb,
+        )
+
+        // Run Post-Install
+        deploymentManager.executePostInstall(
+            environment = testEnv,
+            installConfig = config,
+            lddmDebOverride = lddmDeb,
+            lddeDebOverride = lddeDeb,
+        )
+
+        // Verify Post-Install completed
+        val postMarker = File(rootfsDir, "etc/linuxdroid/POST_INSTALL_COMPLETE")
+        assertThat(postMarker.exists()).isTrue()
+        assertThat(postMarker.readText()).contains("STATUS=POST_INSTALL_COMPLETE")
+
+        // Verify packages installed
+        assertThat(File(rootfsDir, "usr/bin/lddm").exists()).isTrue()
+        assertThat(File(rootfsDir, "usr/bin/ldde").exists()).isTrue()
+
+        // Verify user and sudoers configured
+        assertThat(File(rootfsDir, "home/developer").exists()).isTrue()
+        val sudoersFile = File(rootfsDir, "etc/sudoers.d/010_developer-nopasswd")
+        assertThat(sudoersFile.exists()).isTrue()
+        assertThat(sudoersFile.readText()).contains("developer ALL=(ALL) NOPASSWD: ALL")
+
+        // Verify temporary secret removed
+        assertThat(File(rootfsDir, "etc/linuxdroid/.install.secret").exists()).isFalse()
+        assertThat(File(rootfsDir, "root/.linuxdroid/packages").exists()).isFalse()
+    }
+
+    // =========================================================================
+    // TEST 23: Installation Logging and Credential Redaction
+    // =========================================================================
+    @Test
+    fun `TEST 23 - Full two-phase deployment creates install log with standardized markers and redacts passwords`() = runBlocking {
+        val rootfsDir = tempFolder.newFolder("log-test-rootfs")
+        populateMockRootfs(rootfsDir, withWayland = true, withWeston = true, withLddm = false, withLdde = false)
+
+        val lddmDeb = tempFolder.newFile("lddm-p23.deb")
+        createMockDeb(
+            destFile = lddmDeb,
+            packageName = "linuxdroid-display-manager",
+            version = "1.0.0",
+            files = mapOf("usr/bin/lddm" to "LDDM_BIN"),
+        )
+        val lddeDeb = tempFolder.newFile("ldde-p23.deb")
+        createMockDeb(
+            destFile = lddeDeb,
+            packageName = "linuxdroid-desktop-environment",
+            version = "1.0.0",
+            files = mapOf("usr/bin/ldde" to "LDDE_BIN"),
+        )
+
+        val installDir = tempFolder.newFolder("install-23")
+        val storage = mockk<EnvironmentStorage>(relaxed = true)
+        every { storage.rootfsDir(testEnvId) } returns rootfsDir
+        every { storage.stagingRootfsDir(testEnvId) } returns rootfsDir
+        every { storage.logsDir(testEnvId) } returns tempFolder.newFolder("logs-23")
+        every { storage.metadataDir(testEnvId) } returns tempFolder.newFolder("meta-23")
+        every { storage.installationDir(testEnvId) } returns installDir
+        every { storage.installationLogFile(testEnvId) } returns File(installDir, "install.log")
+        every { storage.installationStateFile(testEnvId) } returns File(installDir, "install-state")
+        every { storage.installationMetadataFile(testEnvId) } returns File(installDir, "install-metadata")
+
+        val deploymentManager = RootfsDeploymentManager(
+            storage = storage,
+            validator = validator,
+            extractor = extractor,
+            configurator = configurator,
+            runtimeSetup = runtimeSetup,
+        )
+
+        val secretPass = "SuperSecretPlainTextPassword123"
+        val config = InstallConfig(
+            distro = Distribution.DEBIAN,
+            release = "trixie",
+            username = "alice",
+            password = secretPass,
+        )
+
+        val result = deploymentManager.deployRootfs(
+            environment = testEnv,
+            installConfig = config,
+            lddmDebOverride = lddmDeb,
+            lddeDebOverride = lddeDeb,
+        )
+
+        assertThat(result.isSuccess).isTrue()
+        assertThat(result.state).isEqualTo(RootfsDeploymentState.ROOTFS_READY)
+
+        val logFile = File(installDir, "install.log")
+        val stateFile = File(installDir, "install-state")
+        val metaFile = File(installDir, "install-metadata")
+
+        assertThat(logFile.exists()).isTrue()
+        val logContent = logFile.readText()
+        // Standardized markers
+        assertThat(logContent).contains("[PREINSTALL][START][PRE_INSTALL]")
+        assertThat(logContent).contains("[PREINSTALL][SUCCESS][PRE_INSTALL]")
+        assertThat(logContent).contains("[POSTINSTALL][START][POST_INSTALL]")
+        assertThat(logContent).contains("[POSTINSTALL][SUCCESS][POST_INSTALL]")
+
+        // Password redaction guarantee
+        assertThat(logContent).doesNotContain(secretPass)
+        assertThat(stateFile.readText()).doesNotContain(secretPass)
+        assertThat(metaFile.readText()).doesNotContain(secretPass)
+    }
+
+    // =========================================================================
+    // TEST 24: Post-Install Fails Safely if PRE_INSTALL_READY is Missing
+    // =========================================================================
+    @Test
+    fun `TEST 24 - Post-install fails safely if PRE_INSTALL_READY is missing`() {
+        val rootfsDir = tempFolder.newFolder("no-pre-ready-rootfs")
+        populateMockRootfs(rootfsDir)
+
+        val storage = mockk<EnvironmentStorage>(relaxed = true)
+        every { storage.rootfsDir(testEnvId) } returns rootfsDir
+
+        val deploymentManager = RootfsDeploymentManager(
+            storage = storage,
+            validator = validator,
+        )
+
+        val ex = assertThrows(RuntimeError::class.java) {
+            runBlocking {
+                deploymentManager.executePostInstall(environment = testEnv)
+            }
+        }
+
+        assertThat(ex.message).contains("PRE_INSTALL_READY")
+    }
 }
+

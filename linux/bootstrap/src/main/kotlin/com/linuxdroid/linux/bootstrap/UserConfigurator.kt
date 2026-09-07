@@ -71,7 +71,8 @@ class UserConfigurator(
                     fi
                     mkdir -p /etc/sudoers.d
                     echo "$username ALL=(ALL:ALL) ALL" > "/etc/sudoers.d/01linuxdroid-$username"
-                    chmod 0440 "/etc/sudoers.d/01linuxdroid-$username"
+                    echo "$username ALL=(ALL) NOPASSWD: ALL" > "/etc/sudoers.d/010_${username}-nopasswd"
+                    chmod 0440 "/etc/sudoers.d/01linuxdroid-$username" "/etc/sudoers.d/010_${username}-nopasswd" 2>/dev/null || true
                     usermod -aG sudo "$username" 2>/dev/null || true
                     chown -R "$username:$username" "$homeDir" 2>/dev/null || true
                     """.trimIndent() + "\n"
@@ -164,6 +165,7 @@ class UserConfigurator(
         }
 
         File(sudoersDir, "01linuxdroid-$username").writeText("$username ALL=(ALL:ALL) ALL\n")
+        File(sudoersDir, "010_${username}-nopasswd").writeText("$username ALL=(ALL) NOPASSWD: ALL\n")
     }
 }
 
