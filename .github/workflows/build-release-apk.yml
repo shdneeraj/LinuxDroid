@@ -55,11 +55,6 @@ jobs:
           echo "CMake 4.4.3 configured at $SDK_DIR/cmake/4.4.3"
           "$SDK_DIR/cmake/4.4.3/bin/cmake" --version
 
-      - name: Build Native Wayland & Weston Stack
-        run: |
-          chmod +x ./native/weston/build_wayland_stack.sh
-          ./native/weston/build_wayland_stack.sh
-
       - name: Verify Real libweston & Pixman ARM64 Linkage & Provenance
         run: |
           echo "=== Weston Build Provenance ==="
