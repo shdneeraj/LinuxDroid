@@ -240,6 +240,7 @@ class DefaultSessionManager(
                     runtimePid = sessionProcess.pid,
                 ),
             )
+            startSessionSupervision(environment, sessionId, sessionProcess)
             runningSession
         } catch (e: Exception) {
             log.withEnvironment(environment.id).error(
@@ -394,6 +395,8 @@ class DefaultSessionManager(
                         "LDDE_STARTING" -> SessionState.LDDE_STARTING
                         "LDDE_READY" -> SessionState.LDDE_READY
                         "GUI_READY", "RUNNING" -> SessionState.GUI_READY
+                        "GRAPHICAL_SESSION_RECOVERING" -> SessionState.GRAPHICAL_SESSION_RECOVERING
+                        "GRAPHICAL_SESSION_FAILED" -> SessionState.GRAPHICAL_SESSION_FAILED
                         "FAILED" -> SessionState.FAILED
                         else -> null
                     }
@@ -497,6 +500,83 @@ class DefaultSessionManager(
             initFile.parentFile?.mkdirs()
             initFile.writeText(GuestInit.SCRIPT_CONTENT)
             initFile.setExecutable(true, false)
+        }
+    }
+
+    private fun startSessionSupervision(
+        environment: Environment,
+        sessionId: SessionId,
+        sessionProcess: ProcessHandle,
+    ) {
+        sessionScope.launch {
+            val rootfsDir = storage.rootfsDir(environment.id)
+            val stateCandidates = listOf(
+                File(rootfsDir, "run/lddm/sessions/session-default/state/session_state"),
+                File(rootfsDir, "run/lddm/sessions/default/state/session_state"),
+                File(storage.runtimeStateDir(environment.id), "session_state.txt")
+            )
+
+            while (true) {
+                kotlinx.coroutines.delay(250)
+                val current = sessionMap[sessionId] ?: break
+                if (!current.state.isActive() || current.state == SessionState.STOPPING) {
+                    break
+                }
+
+                // 1. Process liveness check
+                val isDead = sessionProcess.pid > 0 && !File("/proc/${sessionProcess.pid}").exists() && sessionProcess.state.isTerminal()
+                if (isDead) {
+                    log.withEnvironment(environment.id).warn("Supervised LDDM process ${sessionProcess.pid} exited")
+                    val failedSession = current.copy(
+                        state = SessionState.FAILED,
+                        failureMessage = "LDDM graphical session supervisor terminated unexpectedly",
+                        stoppedAt = System.currentTimeMillis(),
+                    )
+                    sessionMap[sessionId] = failedSession
+                    _sessions.value = sessionMap.toMap()
+                    persistSessionState(failedSession)
+                    break
+                }
+
+                // 2. Read state file from guest
+                val stateFile = stateCandidates.firstOrNull { it.exists() && it.length() > 0 }
+                if (stateFile != null) {
+                    val lines = try { stateFile.readLines() } catch (_: Exception) { emptyList() }
+                    val stateLine = lines.firstOrNull { it.startsWith("STATE=") }?.removePrefix("STATE=")?.trim()
+                    if (stateLine != null) {
+                        val observedState = when (stateLine) {
+                            "GRAPHICAL_SESSION_RECOVERING" -> SessionState.GRAPHICAL_SESSION_RECOVERING
+                            "GRAPHICAL_SESSION_FAILED" -> SessionState.GRAPHICAL_SESSION_FAILED
+                            "WESTON_STARTING" -> SessionState.WESTON_STARTING
+                            "WESTON_READY" -> SessionState.WESTON_READY
+                            "LDDE_STARTING" -> SessionState.LDDE_STARTING
+                            "LDDE_READY" -> SessionState.LDDE_READY
+                            "GUI_READY", "RUNNING" -> SessionState.GUI_READY
+                            "STOPPED" -> SessionState.STOPPED
+                            "FAILED" -> SessionState.FAILED
+                            else -> null
+                        }
+                        if (observedState != null && observedState != current.state) {
+                            log.withEnvironment(environment.id).info(
+                                "Live session state changed: ${current.state} -> $observedState",
+                                details = mapOf("from" to current.state.name, "to" to observedState.name)
+                            )
+                            val updated = current.copy(
+                                state = observedState,
+                                stoppedAt = if (!observedState.isActive()) System.currentTimeMillis() else current.stoppedAt,
+                                failureMessage = if (observedState == SessionState.GRAPHICAL_SESSION_FAILED || observedState == SessionState.FAILED) "Graphical session recovery failed or exhausted" else current.failureMessage
+                            )
+                            sessionMap[sessionId] = updated
+                            _sessions.value = sessionMap.toMap()
+                            persistSessionState(updated)
+
+                            if (!observedState.isActive()) {
+                                break
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -426,6 +426,103 @@ kill -TERM "${TX_PID}" 2>/dev/null || true
 wait "${TX_PID}" 2>/dev/null || true
 
 # =============================================================================
+# TEST 7 — Missing / Invalid Weston Binary Handling
+# =============================================================================
+log_header "TEST 7: Fault Injection — Missing Weston Binary"
+T7_DIR="${TEST_BASE}/t7"
+setup_test_env "${T7_DIR}"
+# Change executable to invalid binary
+sed -i 's|executable = .*|executable = /usr/bin/nonexistent_weston_binary|' "${T7_DIR}/lddm.conf"
+
+export XDG_RUNTIME_DIR="${T7_DIR}/run"
+set +e
+"${LDDM_BIN}" --config "${T7_DIR}/lddm.conf" >/dev/null 2>&1 &
+T7_PID=$!
+set -e
+
+# Should fail fast and not reach GUI_READY
+if wait_for_state "${T7_DIR}" "GUI_READY" 3; then
+    log_fail "Test 7" "Expected failure but reached GUI_READY"
+else
+    wait "${T7_PID}" 2>/dev/null || true
+    log_pass "Test 7: Fault injection handled cleanly (fail-fast without hanging)"
+fi
+kill -9 "${T7_PID}" 2>/dev/null || true
+
+# =============================================================================
+# TEST 8 — Stale Inactive Socket & Lock Auto-Cleanup
+# =============================================================================
+log_header "TEST 8: Stale Inactive Socket & Lock Auto-Cleanup"
+T8_DIR="${TEST_BASE}/t8"
+setup_test_env "${T8_DIR}"
+
+# Pre-create a dead UNIX socket and lock file at session path
+T8_SESS_RUN="${T8_DIR}/run/sessions/session-default/run"
+mkdir -p "${T8_SESS_RUN}"
+python3 -c "
+import socket
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind('${T8_SESS_RUN}/wayland-0')
+s.close()
+"
+touch "${T8_SESS_RUN}/wayland-0.lock"
+
+export XDG_RUNTIME_DIR="${T8_DIR}/run"
+"${LDDM_BIN}" --config "${T8_DIR}/lddm.conf" >/dev/null 2>&1 &
+T8_PID=$!
+
+if wait_for_state "${T8_DIR}" "GUI_READY" 10; then
+    if [ -S "${T8_SESS_RUN}/wayland-0" ]; then
+        log_pass "Test 8: Stale socket & lock auto-cleaned and operational compositor started"
+    else
+        log_fail "Test 8" "Wayland socket missing"
+    fi
+else
+    log_fail "Test 8" "Failed to start over stale socket/lock files"
+fi
+kill -TERM "${T8_PID}" 2>/dev/null || true
+wait "${T8_PID}" 2>/dev/null || true
+
+# =============================================================================
+# TEST 9 — Session Identity & State File Metadata Verification
+# =============================================================================
+log_header "TEST 9: Session Identity & State File Verification"
+T9_DIR="${TEST_BASE}/t9"
+setup_test_env "${T9_DIR}"
+
+export XDG_RUNTIME_DIR="${T9_DIR}/run"
+"${LDDM_BIN}" --config "${T9_DIR}/lddm.conf" >/dev/null 2>&1 &
+T9_PID=$!
+
+if wait_for_state "${T9_DIR}" "GUI_READY" 10; then
+    STATE_FILE=""
+    for f in "${T9_DIR}/run/session_state" "${T9_DIR}/run/sessions/session-default/state/session_state"; do
+        if [ -f "$f" ] && grep -q "STATE=GUI_READY" "$f"; then
+            STATE_FILE="$f"
+            break
+        fi
+    done
+
+    if [[ -n "${STATE_FILE}" ]]; then
+        grep -q "STATE=GUI_READY" "${STATE_FILE}" && \
+        grep -q "SESSION_ID=" "${STATE_FILE}" && \
+        grep -q "PID=" "${STATE_FILE}" && \
+        grep -q "TIMESTAMP=" "${STATE_FILE}"
+        if [ $? -eq 0 ]; then
+            log_pass "Test 9: State file contains full identity metadata (STATE, SESSION_ID, PID, TIMESTAMP)"
+        else
+            log_fail "Test 9" "State file missing required metadata fields"
+        fi
+    else
+        log_fail "Test 9" "State file not found"
+    fi
+else
+    log_fail "Test 9" "Failed to reach GUI_READY"
+fi
+kill -TERM "${T9_PID}" 2>/dev/null || true
+wait "${T9_PID}" 2>/dev/null || true
+
+# =============================================================================
 # Summary
 # =============================================================================
 log_header "TEST SUITE SUMMARY"

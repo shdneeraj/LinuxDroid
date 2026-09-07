@@ -13,7 +13,7 @@
       "version": "0.1.0",
       "architecture": "arm64",
       "package_file": "linuxdroid-display-manager_0.1.0_arm64.deb",
-      "sha256": "a06d279a2bd76a7c592b1c5f4664babfc064aaba634ae7bad1d3ff2f49c0f7f2"
+      "sha256": "fef07d841071beca6d26c1809de6bfd2f4385105973c5af7c019bcc15f1043d7"
     },
     "LDDE": {
       "repository": "LinuxDroidapp/LDDE",
@@ -21,7 +21,7 @@
       "version": "1.0.0",
       "architecture": "arm64",
       "package_file": "linuxdroid-desktop-environment_1.0.0_arm64.deb",
-      "sha256": "5269c30b93a80cf0ef1870ecdfd54ced97099d5e2b0f07915619b8226fe112f2"
+      "sha256": "57a65483efa21a79d7d2865db3c4faf042bdea08a1770b5d6b432bf335c88b9a"
     }
   },
   "linux_rootfs_packages": [

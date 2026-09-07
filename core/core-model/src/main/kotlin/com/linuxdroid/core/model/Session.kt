@@ -44,6 +44,14 @@ enum class SessionState {
     STARTING_COMPOSITOR,
     /** Backward compatibility alias for LDDE_STARTING. */
     STARTING_DESKTOP,
+    /** Weston compositor failed. */
+    WESTON_FAILED,
+    /** LDDE desktop environment failed. */
+    LDDE_FAILED,
+    /** Graphical session encountered a component failure and LDDM recovery is actively restoring it. */
+    GRAPHICAL_SESSION_RECOVERING,
+    /** Graphical session recovery exhausted all retry attempts or failed unrecoverably. */
+    GRAPHICAL_SESSION_FAILED,
     /** Session is shutting down. */
     STOPPING,
     /** Session stopped cleanly. */
@@ -65,6 +73,7 @@ enum class SessionState {
         STARTING_RUNTIME,
         STARTING_COMPOSITOR,
         STARTING_DESKTOP,
+        GRAPHICAL_SESSION_RECOVERING,
         STOPPING,
     )
 }
