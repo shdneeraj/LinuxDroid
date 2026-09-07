@@ -141,6 +141,11 @@ jobs:
             echo "ERROR: libproot.so still dynamically links libtalloc.so or libandroid-shmem.so!"
             exit 1
           fi
+          echo "=== Verifying Graphical Packages & Rootfs Installer in APK ==="
+          unzip -l "$APK_FILE" | grep -E "assets/packages/linuxdroid-display-manager_.*_arm64\.deb"
+          unzip -l "$APK_FILE" | grep -E "assets/packages/linuxdroid-desktop-environment_.*_arm64\.deb"
+          unzip -l "$APK_FILE" | grep -E "assets/packages/PACKAGES_MANIFEST\.txt"
+          unzip -l "$APK_FILE" | grep -E "assets/scripts/install_rootfs\.sh"
           echo "APK packaging verification passed."
 
       - name: Upload build log on failure

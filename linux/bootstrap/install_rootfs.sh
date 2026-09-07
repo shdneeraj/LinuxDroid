@@ -428,30 +428,47 @@ guest_install_core_packages() {
     export DEBIAN_FRONTEND=noninteractive
 
     local core_pkgs=(
+        bash
+        zsh
+        coreutils
+        util-linux
+        procps
+        psmisc
+        findutils
+        grep
+        sed
+        gawk
+        file
+        less
         sudo
         curl
         wget
+        openssl
         ca-certificates
+        iproute2
+        iputils-ping
+        openssh-client
+        apt
         gnupg
         locales
         tzdata
     )
 
-    local shell_pkgs=(
-        zsh
-        bash
-    )
+    if [[ "${DISTRO}" == "ubuntu" ]]; then
+        core_pkgs+=(ubuntu-keyring)
+    else
+        core_pkgs+=(debian-archive-keyring)
+    fi
 
-    local net_pkgs=(
-        iproute2
+    local shell_pkgs=(
         net-tools
         dnsutils
-        iputils-ping
     )
 
     local dev_pkgs=(
-        build-essential
         git
+        build-essential
+        pkg-config
         python3
     )
 
@@ -460,15 +477,15 @@ guest_install_core_packages() {
         gzip
         bzip2
         xz-utils
-        unzip
         zip
+        unzip
     )
 
     local doc_pkgs=(
         nano
         vim-tiny
-        less
         man-db
+        manpages
     )
 
     local dbus_pkgs=(
@@ -481,7 +498,6 @@ guest_install_core_packages() {
     apt-get install -y \
         "${core_pkgs[@]}" \
         "${shell_pkgs[@]}" \
-        "${net_pkgs[@]}" \
         "${dev_pkgs[@]}" \
         "${archive_pkgs[@]}" \
         "${doc_pkgs[@]}" \
@@ -515,6 +531,53 @@ guest_install_graphics_stack() {
     log_pass "[Guest] Wayland and Weston packages installed."
 }
 
+guest_install_deb_idempotent() {
+    local pkg_name="$1"
+    local deb_path="$2"
+
+    if [[ -z "${deb_path}" || ! -f "${deb_path}" ]]; then
+        log_warn "[Guest] Bundled package file for '${pkg_name}' not found."
+        return 0
+    fi
+
+    # Handle interrupted dpkg/apt states
+    if [[ -f /var/lib/dpkg/lock || -f /var/lib/dpkg/lock-frontend ]]; then
+        log_warn "[Guest] Stale dpkg lock detected. Recovering package manager state..."
+        rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend
+        dpkg --configure -a || true
+        apt-get install -f -y || true
+    fi
+
+    local bundled_version
+    bundled_version="$(dpkg-deb -f "${deb_path}" Version 2>/dev/null || true)"
+
+    local installed_status
+    local installed_version
+    if dpkg -s "${pkg_name}" >/dev/null 2>&1; then
+        installed_status="$(dpkg-query -W -f='${Status}' "${pkg_name}" 2>/dev/null || true)"
+        installed_version="$(dpkg-query -W -f='${Version}' "${pkg_name}" 2>/dev/null || true)"
+    fi
+
+    if [[ "${installed_status}" == "install ok installed" && -n "${installed_version}" && -n "${bundled_version}" ]]; then
+        if dpkg --compare-versions "${installed_version}" eq "${bundled_version}"; then
+            log_pass "[Guest] Package '${pkg_name}' is already at target version (${installed_version}). Preserving."
+            return 0
+        elif dpkg --compare-versions "${installed_version}" gt "${bundled_version}"; then
+            log_warn "[Guest] Existing '${pkg_name}' (${installed_version}) is newer than bundled (${bundled_version}). Skipping downgrade."
+            return 0
+        else
+            log_info "[Guest] Upgrading '${pkg_name}': ${installed_version} -> ${bundled_version}"
+        fi
+    else
+        log_info "[Guest] Installing '${pkg_name}' (${bundled_version})..."
+    fi
+
+    apt-get install -y "${deb_path}" || {
+        log_warn "Direct apt install had dependency issues. Running apt-get install -f..."
+        apt-get install -f -y
+    }
+}
+
 guest_install_bundled_packages() {
     log_info "[Guest] Installing bundled LinuxDroid packages (LDDM & LDDE)..."
     export DEBIAN_FRONTEND=noninteractive
@@ -528,25 +591,8 @@ guest_install_bundled_packages() {
         ldde_deb="$(find "${pkg_dir}" -name "linuxdroid-desktop-environment*.deb" | head -n 1 || true)"
     fi
 
-    if [[ -n "${lddm_deb}" && -f "${lddm_deb}" ]]; then
-        log_info "[Guest] Installing LDDM package: ${lddm_deb}"
-        apt-get install -y "${lddm_deb}" || {
-            log_warn "Direct apt install had dependency issues. Running apt-get install -f..."
-            apt-get install -f -y
-        }
-    else
-        log_warn "[Guest] Bundled LDDM .deb package not found in ${pkg_dir}."
-    fi
-
-    if [[ -n "${ldde_deb}" && -f "${ldde_deb}" ]]; then
-        log_info "[Guest] Installing LDDE package: ${ldde_deb}"
-        apt-get install -y "${ldde_deb}" || {
-            log_warn "Direct apt install had dependency issues. Running apt-get install -f..."
-            apt-get install -f -y
-        }
-    else
-        log_warn "[Guest] Bundled LDDE .deb package not found in ${pkg_dir}."
-    fi
+    guest_install_deb_idempotent "linuxdroid-display-manager" "${lddm_deb}"
+    guest_install_deb_idempotent "linuxdroid-desktop-environment" "${ldde_deb}"
 
     log_pass "[Guest] Bundled LinuxDroid packages installed."
 }
@@ -713,9 +759,11 @@ guest_validate_system() {
         log_pass "Validation check: Default shell is Zsh (${user_shell})."
     fi
 
-    if ! command -v sudo >/dev/null 2>&1; then
-        log_error "Validation failed: 'sudo' binary not found!"
+    if ! command -v sudo >/dev/null 2>&1 || ! sudo -V >/dev/null 2>&1; then
+        log_error "Validation failed: 'sudo' binary missing or non-functional!"
         validation_failed=true
+    else
+        log_pass "Validation check: sudo is available and functional."
     fi
 
     log_info "[Guest] Checking dpkg audit status..."
@@ -731,20 +779,25 @@ guest_validate_system() {
         log_pass "Validation check: Weston is present ($(weston --version 2>/dev/null || echo 'installed'))."
     fi
 
-    if dpkg -s linuxdroid-display-manager >/dev/null 2>&1; then
-        log_pass "Validation check: LDDM package installed."
-    elif [[ -x /usr/bin/lddm || -x /usr/local/bin/lddm ]]; then
-        log_pass "Validation check: LDDM binary found."
+    if dpkg -s libwayland-client0 >/dev/null 2>&1 || [[ -f /usr/lib/aarch64-linux-gnu/libwayland-client.so.0 || -f /usr/lib/libwayland-client.so.0 ]]; then
+        log_pass "Validation check: Wayland client library is installed."
     else
-        log_warn "LDDM package or binary not detected."
+        log_error "Validation failed: Wayland client library not found!"
+        validation_failed=true
     fi
 
-    if dpkg -s linuxdroid-desktop-environment >/dev/null 2>&1; then
-        log_pass "Validation check: LDDE package installed."
-    elif [[ -x /usr/bin/ldde || -x /usr/local/bin/ldde || -x /usr/bin/ldde-session ]]; then
-        log_pass "Validation check: LDDE binary found."
+    if dpkg -s linuxdroid-display-manager >/dev/null 2>&1 || [[ -x /usr/bin/lddm || -x /usr/local/bin/lddm ]]; then
+        log_pass "Validation check: LDDM is installed."
     else
-        log_warn "LDDE package or binary not detected."
+        log_error "Validation failed: LDDM package or binary not found!"
+        validation_failed=true
+    fi
+
+    if dpkg -s linuxdroid-desktop-environment >/dev/null 2>&1 || [[ -x /usr/bin/ldde || -x /usr/local/bin/ldde ]]; then
+        log_pass "Validation check: LDDE is installed."
+    else
+        log_error "Validation failed: LDDE package or binary not found!"
+        validation_failed=true
     fi
 
     if [[ "${validation_failed}" == true ]]; then

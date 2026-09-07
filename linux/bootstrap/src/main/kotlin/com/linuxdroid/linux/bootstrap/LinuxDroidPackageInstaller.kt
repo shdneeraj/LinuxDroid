@@ -167,12 +167,12 @@ class LinuxDroidPackageInstaller(
             // 4. Check and handle interrupted dpkg operations if lock or updates exist
             handleInterruptedDpkg(environment, rootfsDir, onLog)
 
-            // 5. Execute `dpkg -i /tmp/staging_pkgs/<deb>` inside rootfs
+            // 5. Execute `apt-get install -y /tmp/staging_pkgs/<deb>` inside rootfs
             val guestDebPath = "/tmp/staging_pkgs/${debFile.name}"
-            onLog(">>> [DPKG] Executing dpkg -i $guestDebPath inside guest userspace...")
+            onLog(">>> [APT] Executing apt-get install -y $guestDebPath inside guest userspace...")
 
             val installSuccess = if (runtimeBackend != null) {
-                val cmd = listOf("dpkg", "-i", guestDebPath)
+                val cmd = listOf("apt-get", "install", "-y", guestDebPath)
                 val extraEnv = mapOf(
                     "DEBIAN_FRONTEND" to "noninteractive",
                     "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -182,15 +182,24 @@ class LinuxDroidPackageInstaller(
                     command = cmd,
                     workingDirectory = "/root",
                     extraEnv = extraEnv,
-                    timeoutMs = 60_000,
+                    timeoutMs = 120_000,
                 )
                 if (result.exitCode != 0) {
-                    val err = "dpkg -i failed with exit code ${result.exitCode}: ${result.stderr.ifBlank { result.stdout }}"
-                    log.error("[PKG_INSTALL] $err")
-                    onLog(">>> [ERROR] $err")
-                    // Attempt dpkg --configure -a in case of dependency triggers
-                    tryConfigureDpkg(environment, rootfsDir)
-                    throw RuntimeError(environment.id, err)
+                    val err = "apt-get install -y failed with exit code ${result.exitCode}: ${result.stderr.ifBlank { result.stdout }}"
+                    log.warn("[PKG_INSTALL] $err; attempting apt-get install -f -y recovery")
+                    onLog(">>> [WARN] $err; attempting apt-get install -f -y recovery...")
+
+                    val fixResult = runtimeBackend.executeAndWait(
+                        environment = environment.copy(rootfsPath = rootfsDir.absolutePath),
+                        command = listOf("apt-get", "install", "-f", "-y"),
+                        workingDirectory = "/root",
+                        extraEnv = extraEnv,
+                        timeoutMs = 120_000,
+                    )
+                    if (fixResult.exitCode != 0) {
+                        tryConfigureDpkg(environment, rootfsDir)
+                        throw RuntimeError(environment.id, err)
+                    }
                 }
                 if (getInstalledPackageVersion(rootfsDir, metadata.packageName) == null) {
                     simulateDpkgInstall(rootfsDir, stagedDeb, metadata)
@@ -239,8 +248,19 @@ class LinuxDroidPackageInstaller(
             if (f != null) return f
         }
 
-        // 2. Check Android assets if context available
+        // 2. Check Android assets and RuntimeAssetsManager if context available
         if (context != null) {
+            try {
+                val assetsMgr = com.linuxdroid.core.runtime.RuntimeAssetsManager(context)
+                if (packageName == "linuxdroid-display-manager") {
+                    val deb = assetsMgr.getLddmPackage()
+                    if (deb != null && deb.exists() && deb.length() > 0L) return deb
+                } else if (packageName == "linuxdroid-desktop-environment") {
+                    val deb = assetsMgr.getLddePackage()
+                    if (deb != null && deb.exists() && deb.length() > 0L) return deb
+                }
+            } catch (_: Exception) {}
+
             try {
                 val assetList = context.assets.list("packages") ?: emptyArray()
                 val candidate = assetList.firstOrNull { it.startsWith(packageName) && (it.contains(arch) || it.contains("all")) && it.endsWith(".deb") }
