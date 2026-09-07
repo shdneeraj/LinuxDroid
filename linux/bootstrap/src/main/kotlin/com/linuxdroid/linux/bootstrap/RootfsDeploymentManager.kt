@@ -204,7 +204,27 @@ class RootfsDeploymentManager(
                         currentState = RootfsDeploymentState.ROOTFS_EXTRACTED
                         _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
 
-                        // Stage A — Extraction Validation
+                        // 3. Configure Staging Rootfs & Inject Guest Init BEFORE Stage A
+                        currentState = RootfsDeploymentState.ROOTFS_CONFIGURING
+                        _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
+                        onProgress(0.60f, "Configuring base system files…")
+                        configurator.configure(stagingDir, definition)
+
+                        onProgress(0.65f, "Injecting LinuxDroid guest init and runtime files…")
+                        runtimeSetup.setup(stagingDir)
+
+                        // Explicit check: Verify /sbin/linuxdroid-init exists and is executable in staging
+                        val injectedInit = File(stagingDir, "sbin/linuxdroid-init")
+                        if (!injectedInit.exists() || !injectedInit.canExecute()) {
+                            val errMsg = "Failed to inject executable /sbin/linuxdroid-init into staging rootfs"
+                            log.error("[DEPLOY_FAILED] $errMsg")
+                            onLog(">>> [FAIL] $errMsg")
+                            throw RuntimeError(environmentId, errMsg)
+                        }
+                        onLog(">>> [SETUP] Injected persistent guest init at ${injectedInit.path} (0755)")
+
+                        // 4. Stage A — Extraction & Prepared Rootfs Validation (Validates base filesystem, dynamic linker, APT, and /sbin/linuxdroid-init)
+                        onProgress(0.68f, "Validating base filesystem and guest init integrity…")
                         val extractReport = validator.validateExtraction(stagingDir, targetDistro, environment.architecture)
                         if (!extractReport.isValid) {
                             val errMsg = "Stage A Extraction Validation failed with ${extractReport.errors.size} errors:\n${extractReport.formatSummary()}"
@@ -212,28 +232,19 @@ class RootfsDeploymentManager(
                             extractReport.errors.forEach { onLog(">>> [VALIDATE_FAIL] $it") }
                             throw RuntimeError(environmentId, errMsg)
                         }
-                        onLog(">>> [PASS] Stage A: Extraction validation verified base filesystem integrity.")
-
-                        // 3. Configure Staging Rootfs (preserves existing rootfs APT configuration)
-                        currentState = RootfsDeploymentState.ROOTFS_CONFIGURING
-                        _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                        onProgress(0.65f, "Configuring base system files…")
-                        configurator.configure(stagingDir, definition)
-
-                        // 4. Setup Runtime Infrastructure in Staging
-                        currentState = RootfsDeploymentState.ROOTFS_RUNTIME_READY
-                        _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                        onProgress(0.70f, "Preparing runtime infrastructure…")
-                        runtimeSetup.setup(stagingDir)
+                        onLog(">>> [PASS] Stage A: Extraction validation verified base filesystem and guest init integrity.")
 
                         // 5. Promote Staging to Active
-                        onProgress(0.72f, "Promoting filesystem to active environment…")
+                        currentState = RootfsDeploymentState.ROOTFS_RUNTIME_READY
+                        _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
+                        onProgress(0.70f, "Promoting filesystem to active environment…")
                         val promoted = storage.promoteStagedRootfs(environmentId)
                         if (!promoted) {
                             throw FilesystemError(finalRootfsDir.path, "Failed to promote staging rootfs to active directory")
                         }
 
-                        // Stage B — Runtime Validation
+                        // Stage B — Runtime Validation (validates guest init, /tmp, /run on active rootfs)
+                        onProgress(0.72f, "Validating runtime infrastructure…")
                         if (!validator.validateRuntime(finalRootfsDir)) {
                             throw RuntimeError(environmentId, "Stage B Runtime Validation failed: guest init or runtime dirs missing")
                         }

@@ -35,6 +35,18 @@ class RuntimeEnvironmentSetup(
         initFile.writeText(GuestInit.SCRIPT_CONTENT)
         initFile.setReadable(true, false)
         initFile.setExecutable(true, false)
+        try {
+            val perms = setOf(
+                java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE,
+                java.nio.file.attribute.PosixFilePermission.GROUP_READ,
+                java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE,
+                java.nio.file.attribute.PosixFilePermission.OTHERS_READ,
+                java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE,
+            )
+            Files.setPosixFilePermissions(initFile.toPath(), perms)
+        } catch (_: Exception) {}
         NativeBridge.setExecutable(initFile.absolutePath)
 
         // 2. Guest Init Hooks Directory (/etc/linuxdroid/init.d)

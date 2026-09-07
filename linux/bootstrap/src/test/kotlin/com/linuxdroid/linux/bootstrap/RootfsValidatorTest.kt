@@ -228,6 +228,27 @@ class RootfsValidatorTest {
         assertThat(report.isValid).isFalse()
         assertThat(report.errors.any { it.contains("guest init") }).isTrue()
     }
+
+    @Test
+    fun `validateExtraction fails when guest init is absent and succeeds after guest init is injected`() {
+        val stagingRootfs = tempFolder.newFolder("staging-rootfs")
+        populateStandardMockRootfs(stagingRootfs, Distribution.DEBIAN)
+        File(stagingRootfs, "sbin/linuxdroid-init").delete()
+
+        // 1. Prior to injection: Stage A fails because guest init is missing
+        val reportBefore = validator.validateExtraction(stagingRootfs, Distribution.DEBIAN, Architecture.ARM64)
+        assertThat(reportBefore.isValid).isFalse()
+        assertThat(reportBefore.errors.any { it.contains("guest_init") || it.contains("linuxdroid-init") }).isTrue()
+
+        // 2. Inject guest init via RuntimeEnvironmentSetup
+        val runtimeSetup = RuntimeEnvironmentSetup()
+        runtimeSetup.setup(stagingRootfs)
+
+        // 3. After injection: Stage A passes
+        val reportAfter = validator.validateExtraction(stagingRootfs, Distribution.DEBIAN, Architecture.ARM64)
+        assertThat(reportAfter.isValid).isTrue()
+        assertThat(reportAfter.errors).isEmpty()
+    }
 }
 
 

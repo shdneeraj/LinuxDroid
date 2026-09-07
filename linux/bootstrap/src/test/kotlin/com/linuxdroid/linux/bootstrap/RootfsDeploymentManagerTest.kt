@@ -807,4 +807,221 @@ class RootfsDeploymentManagerTest {
         assertThat(File(rootfsDir, "etc/linuxdroid/lddm.conf").exists()).isTrue()
         assertThat(File(rootfsDir, "etc/linuxdroid/desktop.conf").exists()).isTrue()
     }
+
+    private fun createMinimalBaseRootfsTarGz(tarFile: File) {
+        val rootfsDir = tempFolder.newFolder("minimal-tar-rootfs-" + System.nanoTime())
+        populateMockRootfs(rootfsDir, withWayland = true, withWeston = true, withLddm = false, withLdde = false)
+        // Upstream archives NEVER contain /sbin/linuxdroid-init!
+        File(rootfsDir, "sbin/linuxdroid-init").delete()
+
+        tarFile.parentFile?.mkdirs()
+        FileOutputStream(tarFile).use { fos ->
+            GzipCompressorOutputStream(fos).use { gzos ->
+                TarArchiveOutputStream(gzos).use { tar ->
+                    rootfsDir.walkTopDown().forEach { file ->
+                        val relPath = file.relativeTo(rootfsDir).path.replace('\\', '/')
+                        if (relPath.isNotEmpty()) {
+                            if (file.isDirectory) {
+                                val entry = TarArchiveEntry(relPath + "/")
+                                tar.putArchiveEntry(entry)
+                                tar.closeArchiveEntry()
+                            } else {
+                                val entry = TarArchiveEntry(relPath).apply {
+                                    size = file.length()
+                                    mode = if (file.canExecute()) 0b111101101 else 0b110100100
+                                }
+                                tar.putArchiveEntry(entry)
+                                file.inputStream().use { it.copyTo(tar) }
+                                tar.closeArchiveEntry()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // TEST 19: Guest Init Injected Before Stage A Validation
+    // =========================================================================
+    @Test
+    fun `TEST 19 - Guest init injection occurs before Stage A validation on extracted rootfs`() = runBlocking {
+        val tarGzFile = tempFolder.newFile("upstream-rootfs.tar.gz")
+        createMinimalBaseRootfsTarGz(tarGzFile)
+
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/rootfs.tar.gz") { exchange ->
+            val bytes = tarGzFile.readBytes()
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        val serverPort = server.address.port
+        val downloadUrl = "http://127.0.0.1:$serverPort/rootfs.tar.gz"
+
+        try {
+            val finalRootfsDir = tempFolder.newFolder("active-rootfs")
+            val stagingDir = tempFolder.newFolder("staging-rootfs")
+            val tmpDir = tempFolder.newFolder("tmp-dir")
+
+            val storage = mockk<EnvironmentStorage>(relaxed = true)
+            val context = mockk<Context>(relaxed = true)
+            coEvery { storage.verifyRootfs(testEnvId) } returnsMany listOf(false, true)
+            every { storage.rootfsDir(testEnvId) } returns finalRootfsDir
+            every { storage.stagingRootfsDir(testEnvId) } returns stagingDir
+            every { storage.tmpDir(testEnvId) } returns tmpDir
+            every { storage.metadataDir(testEnvId) } returns tempFolder.newFolder("meta-19")
+            every { storage.logsDir(testEnvId) } returns tempFolder.newFolder("logs-19")
+            coEvery { storage.promoteStagedRootfs(testEnvId) } answers {
+                finalRootfsDir.deleteRecursively()
+                stagingDir.renameTo(finalRootfsDir)
+            }
+
+            val mockResolver = mockk<DynamicDistributionResolver>()
+            val customDef = debianDef.copy(
+                source = debianDef.source.copy(
+                    url = downloadUrl,
+                    format = ArchiveFormat.TAR_GZ,
+                    expectedChecksum = null,
+                ),
+            )
+            coEvery { mockResolver.resolveLatest(any(), any()) } returns customDef
+
+            val lddmDeb = tempFolder.newFile("lddm-19.deb")
+            createMockDeb(
+                lddmDeb,
+                "linuxdroid-display-manager",
+                "1.0.0",
+                files = mapOf(
+                    "usr/bin/lddm" to "#!/bin/sh\nexit 0\n",
+                    "etc/linuxdroid/lddm.conf" to "[lddm]\nweston_socket=wayland-0\n",
+                ),
+            )
+            val lddeDeb = tempFolder.newFile("ldde-19.deb")
+            createMockDeb(
+                lddeDeb,
+                "linuxdroid-desktop-environment",
+                "1.0.0",
+                files = mapOf(
+                    "usr/bin/ldde" to "#!/bin/sh\nexit 0\n",
+                    "etc/linuxdroid/desktop.conf" to "[desktop]\nshell=default\n",
+                ),
+            )
+
+            val deploymentManager = RootfsDeploymentManager(
+                context = context,
+                storage = storage,
+                validator = validator,
+                extractor = extractor,
+                configurator = configurator,
+                runtimeSetup = runtimeSetup,
+                dynamicResolver = mockResolver,
+            )
+
+            val logLines = mutableListOf<String>()
+            val result = deploymentManager.deployRootfs(
+                environment = testEnv,
+                lddmDebOverride = lddmDeb,
+                lddeDebOverride = lddeDeb,
+                onLog = { msg -> logLines.add(msg) },
+            )
+
+            assertThat(result.isSuccess).isTrue()
+            assertThat(result.state).isEqualTo(RootfsDeploymentState.ROOTFS_READY)
+
+            // Verify the exact ordering in logs:
+            // 1. Injected persistent guest init at staging
+            // 2. Stage A validation verified base filesystem and guest init integrity
+            // 3. Stage B runtime infrastructure verified
+            val setupIdx = logLines.indexOfFirst { it.contains("Injected persistent guest init") }
+            val stageAIdx = logLines.indexOfFirst { it.contains("Stage A: Extraction validation verified") }
+            val stageBIdx = logLines.indexOfFirst { it.contains("Stage B: Runtime infrastructure verified") }
+
+            assertThat(setupIdx).isAtLeast(0)
+            assertThat(stageAIdx).isGreaterThan(setupIdx)
+            assertThat(stageBIdx).isGreaterThan(stageAIdx)
+
+            // Final active rootfs contains injected and executable /sbin/linuxdroid-init
+            val guestInit = File(finalRootfsDir, "sbin/linuxdroid-init")
+            assertThat(guestInit.exists()).isTrue()
+            assertThat(guestInit.canExecute()).isTrue()
+            assertThat(guestInit.readText()).startsWith("#!/bin/sh")
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    // =========================================================================
+    // TEST 20: Guest Init Injection Failure Aborts Before Stage A Validation
+    // =========================================================================
+    @Test
+    fun `TEST 20 - Guest init injection failure in staging aborts deployment before Stage A validation`() = runBlocking {
+        val tarGzFile = tempFolder.newFile("upstream-rootfs-20.tar.gz")
+        createMinimalBaseRootfsTarGz(tarGzFile)
+
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/rootfs.tar.gz") { exchange ->
+            val bytes = tarGzFile.readBytes()
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        val serverPort = server.address.port
+        val downloadUrl = "http://127.0.0.1:$serverPort/rootfs.tar.gz"
+
+        try {
+            val finalRootfsDir = tempFolder.newFolder("active-rootfs-20")
+            val stagingDir = tempFolder.newFolder("staging-rootfs-20")
+            val tmpDir = tempFolder.newFolder("tmp-dir-20")
+
+            val storage = mockk<EnvironmentStorage>(relaxed = true)
+            val context = mockk<Context>(relaxed = true)
+            coEvery { storage.verifyRootfs(testEnvId) } returns false
+            every { storage.rootfsDir(testEnvId) } returns finalRootfsDir
+            every { storage.stagingRootfsDir(testEnvId) } returns stagingDir
+            every { storage.tmpDir(testEnvId) } returns tmpDir
+            every { storage.metadataDir(testEnvId) } returns tempFolder.newFolder("meta-20")
+            every { storage.logsDir(testEnvId) } returns tempFolder.newFolder("logs-20")
+
+            val mockResolver = mockk<DynamicDistributionResolver>()
+            val customDef = debianDef.copy(
+                source = debianDef.source.copy(
+                    url = downloadUrl,
+                    format = ArchiveFormat.TAR_GZ,
+                    expectedChecksum = null,
+                ),
+            )
+            coEvery { mockResolver.resolveLatest(any(), any()) } returns customDef
+
+            // Mock failing runtimeSetup that omits /sbin/linuxdroid-init
+            val failingRuntimeSetup = mockk<RuntimeEnvironmentSetup>()
+            every { failingRuntimeSetup.setup(any()) } answers {
+                // Deliberately do not create /sbin/linuxdroid-init
+            }
+
+            val mockValidator = mockk<RootfsValidator>(relaxed = true)
+
+            val deploymentManager = RootfsDeploymentManager(
+                context = context,
+                storage = storage,
+                validator = mockValidator,
+                extractor = extractor,
+                configurator = configurator,
+                runtimeSetup = failingRuntimeSetup,
+                dynamicResolver = mockResolver,
+            )
+
+            val ex = assertThrows(RuntimeError::class.java) {
+                runBlocking {
+                    deploymentManager.deployRootfs(environment = testEnv)
+                }
+            }
+
+            assertThat(ex.message).contains("Failed to inject executable /sbin/linuxdroid-init into staging rootfs")
+            // Verify validateExtraction was NEVER called because injection failed prior to Stage A
+            verify(exactly = 0) { mockValidator.validateExtraction(any(), any(), any()) }
+        } finally {
+            server.stop(0)
+        }
+    }
 }
