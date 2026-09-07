@@ -6,6 +6,7 @@
 #include <chrono>
 
 #define TAG "LinuxDroid/Input"
+#define LOGD(fmt, ...) __android_log_print(ANDROID_LOG_DEBUG, TAG, fmt, ##__VA_ARGS__)
 #define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO, TAG, fmt, ##__VA_ARGS__)
 #define LOGW(fmt, ...) __android_log_print(ANDROID_LOG_WARN, TAG, fmt, ##__VA_ARGS__)
 #define LOGE(fmt, ...) __android_log_print(ANDROID_LOG_ERROR, TAG, fmt, ##__VA_ARGS__)
@@ -92,22 +93,22 @@ void InputBridge::sendTouchEvent(int action, int pointerId, float x, float y, fl
         case 0: // ACTION_DOWN
         case 5: // ACTION_POINTER_DOWN
             evt.type = InputEventType::TOUCH_DOWN;
-            LOGI("INPUT_TOUCH_DOWN: id=%d at (%.1f, %.1f) pressure=%.2f", pointerId, x, y, pressure);
+            LOGD("INPUT_TOUCH_DOWN: id=%d at (%.1f, %.1f) pressure=%.2f", pointerId, x, y, pressure);
             break;
         case 1: // ACTION_UP
         case 6: // ACTION_POINTER_UP
             evt.type = InputEventType::TOUCH_UP;
-            LOGI("INPUT_TOUCH_UP: id=%d at (%.1f, %.1f)", pointerId, x, y);
+            LOGD("INPUT_TOUCH_UP: id=%d at (%.1f, %.1f)", pointerId, x, y);
             break;
         case 3: // ACTION_CANCEL
             evt.type = InputEventType::TOUCH_CANCEL;
-            LOGI("INPUT_TOUCH_CANCEL: id=%d", pointerId);
+            LOGD("INPUT_TOUCH_CANCEL: id=%d", pointerId);
             break;
         default: // ACTION_MOVE (2)
             evt.type = InputEventType::TOUCH_MOVE;
             uint32_t count = motionLogThrottle_.fetch_add(1, std::memory_order_relaxed);
             if (count % 120 == 0) {
-                LOGI("INPUT_TOUCH_MOTION: id=%d at (%.1f, %.1f) (sampled)", pointerId, x, y);
+                LOGD("INPUT_TOUCH_MOTION: id=%d at (%.1f, %.1f) (sampled)", pointerId, x, y);
             }
             break;
     }
@@ -128,18 +129,18 @@ void InputBridge::sendMouseEvent(int action, int buttonState, float x, float y, 
 
     if (scrollX != 0.0f || scrollY != 0.0f) {
         evt.type = InputEventType::MOUSE_SCROLL;
-        LOGI("INPUT_POINTER_SCROLL: scroll=(%.2f, %.2f) at (%.1f, %.1f)", scrollX, scrollY, x, y);
+        LOGD("INPUT_POINTER_SCROLL: scroll=(%.2f, %.2f) at (%.1f, %.1f)", scrollX, scrollY, x, y);
     } else if (action == 0 || action == 11) { // ACTION_DOWN / ACTION_BUTTON_PRESS
         evt.type = InputEventType::MOUSE_DOWN;
-        LOGI("INPUT_POINTER_BUTTON: pressed buttonState=0x%x at (%.1f, %.1f)", buttonState, x, y);
+        LOGD("INPUT_POINTER_BUTTON: pressed buttonState=0x%x at (%.1f, %.1f)", buttonState, x, y);
     } else if (action == 1 || action == 12) { // ACTION_UP / ACTION_BUTTON_RELEASE
         evt.type = InputEventType::MOUSE_UP;
-        LOGI("INPUT_POINTER_BUTTON: released buttonState=0x%x at (%.1f, %.1f)", buttonState, x, y);
+        LOGD("INPUT_POINTER_BUTTON: released buttonState=0x%x at (%.1f, %.1f)", buttonState, x, y);
     } else {
         evt.type = InputEventType::MOUSE_MOVE;
         uint32_t count = motionLogThrottle_.fetch_add(1, std::memory_order_relaxed);
         if (count % 120 == 0) {
-            LOGI("INPUT_POINTER_MOTION: pos=(%.1f, %.1f) (sampled)", x, y);
+            LOGD("INPUT_POINTER_MOTION: pos=(%.1f, %.1f) (sampled)", x, y);
         }
     }
 
@@ -157,9 +158,9 @@ void InputBridge::sendKeyEvent(int keyCode, bool isDown, int metaState, int unic
     evt.timestampNs = getCurrentTimestampNs();
 
     if (isDown) {
-        LOGI("INPUT_KEY_DOWN: android_kc=%d meta=0x%x unicode=%d", keyCode, metaState, unicodeChar);
+        LOGD("INPUT_KEY_DOWN: android_kc=%d meta=0x%x", keyCode, metaState);
     } else {
-        LOGI("INPUT_KEY_UP: android_kc=%d meta=0x%x", keyCode, metaState);
+        LOGD("INPUT_KEY_UP: android_kc=%d meta=0x%x", keyCode, metaState);
     }
 
     pushEventLocked(evt);

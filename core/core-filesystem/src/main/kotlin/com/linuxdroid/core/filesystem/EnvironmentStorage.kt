@@ -110,8 +110,43 @@ class EnvironmentStorage(
     }
 
     /**
+     * Atomically writes string content to a file via a temporary file and atomic rename.
+     * Prevents metadata corruption in case of unexpected termination or crashes.
+     */
+    suspend fun writeAtomic(targetFile: File, content: String) = withContext(Dispatchers.IO) {
+        val parent = targetFile.parentFile ?: throw FilesystemError(targetFile.path, "Target file has no parent directory")
+        if (!parent.exists() && !parent.mkdirs()) {
+            throw FilesystemError(parent.path, "Failed to create directory for atomic write")
+        }
+        val tempFile = File(parent, "${targetFile.name}.tmp.${System.nanoTime()}")
+        try {
+            tempFile.writeText(content, Charsets.UTF_8)
+            try {
+                java.nio.file.Files.move(
+                    tempFile.toPath(),
+                    targetFile.toPath(),
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                )
+            } catch (e: Exception) {
+                // Fallback if ATOMIC_MOVE is not supported across filesystem boundaries
+                if (!tempFile.renameTo(targetFile)) {
+                    targetFile.delete()
+                    if (!tempFile.renameTo(targetFile)) {
+                        throw FilesystemError(targetFile.path, "Failed to rename temp file atomically: ${e.message}")
+                    }
+                }
+            }
+        } finally {
+            if (tempFile.exists()) {
+                tempFile.delete()
+            }
+        }
+    }
+
+    /**
      * Verifies that the rootfs directory exists and contains a minimal Linux structure.
-     * Does NOT check every path — just enough to confirm the rootfs is present.
+     * Checks core directories and ensures any existing metadata manifest is non-empty.
      */
     suspend fun verifyRootfs(id: EnvironmentId): Boolean = withContext(Dispatchers.IO) {
         val rootfs = rootfsDir(id)
@@ -123,6 +158,11 @@ class EnvironmentStorage(
         val missing = markers.filter { !File(rootfs, it).exists() }
         if (missing.isNotEmpty()) {
             log.warn("Rootfs missing expected directories: $missing")
+            return@withContext false
+        }
+        val manifestFile = File(metadataDir(id), "rootfs-manifest.json")
+        if (manifestFile.exists() && manifestFile.length() == 0L) {
+            log.warn("Rootfs manifest file is empty (corrupted): ${manifestFile.path}")
             return@withContext false
         }
         true

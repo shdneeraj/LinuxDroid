@@ -281,7 +281,7 @@ class RootfsDeploymentManager(
                     installedAt = System.currentTimeMillis(),
                 )
                 val metadataFile = File(storage.metadataDir(environmentId), "rootfs-manifest.json")
-                metadataFile.writeText(json.encodeToString(metadata))
+                storage.writeAtomic(metadataFile, json.encodeToString(metadata))
                 log.info("[DEPLOY_READY] Recorded manifest with ROOTFS_READY at ${metadataFile.path}")
 
                 onProgress(1.0f, "${environment.distribution.displayName} graphical environment ready")

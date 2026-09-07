@@ -110,7 +110,39 @@ Java_com_linuxdroid_native_1bridge_NativeBridge_nativeGetAbi(
 JNIEXPORT jint JNICALL
 Java_com_linuxdroid_native_1bridge_NativeBridge_nativeSendSignal(
     [[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jint pid, jint signal) {
-    if (pid <= 0) return EINVAL;
+    if (pid <= 1) return EINVAL;
+    if (signal < 0 || signal > 64) return EINVAL;
+
+    // Process ownership verification via /proc/<pid>/status
+    std::string procPath = "/proc/" + std::to_string(pid) + "/status";
+    std::ifstream procStatus(procPath);
+    if (!procStatus.is_open()) {
+        if (errno == ENOENT) return ESRCH;
+        return EPERM;
+    }
+
+    std::string line;
+    uid_t appUid = getuid();
+    bool uidVerified = false;
+    while (std::getline(procStatus, line)) {
+        if (line.rfind("Uid:", 0) == 0) {
+            std::istringstream iss(line);
+            std::string label;
+            uid_t realUid;
+            if (iss >> label >> realUid) {
+                if (realUid == appUid) {
+                    uidVerified = true;
+                }
+            }
+            break;
+        }
+    }
+    procStatus.close();
+
+    if (!uidVerified) {
+        return EPERM;
+    }
+
     if (kill((pid_t)pid, (int)signal) != 0) {
         return errno;
     }

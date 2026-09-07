@@ -94,7 +94,16 @@ class HostPreboot(
 
         // 7. Command handover construction
         val cmd = commandBuilder.build(spec.copy(workingDirectory = finalGuestCwd), proot)
-        log.info("[HOST-PREBOOT] Handover command prepared: ${cmd.joinToString(" ")}")
+        val sanitizedCmd = cmd.map { arg ->
+            if (arg.contains("password", ignoreCase = true) ||
+                arg.contains("token", ignoreCase = true) ||
+                arg.contains("secret", ignoreCase = true)) {
+                "[REDACTED]"
+            } else {
+                arg
+            }
+        }
+        log.info("[HOST-PREBOOT] Handover command prepared: ${sanitizedCmd.joinToString(" ")}")
 
         return PrebootLaunchPlan(
             commandLine = cmd,

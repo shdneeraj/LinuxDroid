@@ -34,6 +34,7 @@ import com.linuxdroid.core.model.Distribution
 import com.linuxdroid.core.model.Environment
 import com.linuxdroid.core.model.EnvironmentConfiguration
 import com.linuxdroid.core.model.EnvironmentState
+import com.linuxdroid.core.model.UsernameValidator
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -692,6 +693,8 @@ private fun EnvironmentSettingsDialog(
     var linuxUser by remember { mutableStateOf(environment.configuration.linuxUser) }
     var homeDir by remember { mutableStateOf(environment.configuration.homeDir) }
     var sharedStorage by remember { mutableStateOf(environment.configuration.runtime.sharedStorageEnabled) }
+    val userValidationError = remember(linuxUser) { UsernameValidator.validate(linuxUser) }
+    val isFormValid = userValidationError == null
     val neuColors = NeuTheme.colors
 
     AlertDialog(
@@ -707,6 +710,10 @@ private fun EnvironmentSettingsDialog(
                     value = linuxUser,
                     onValueChange = { linuxUser = it },
                     label = { Text("Linux User") },
+                    isError = userValidationError != null,
+                    supportingText = userValidationError?.let {
+                        { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = neuColors.textPrimary,
@@ -747,15 +754,20 @@ private fun EnvironmentSettingsDialog(
         confirmButton = {
             NeuButton(
                 onClick = {
-                    val newConfig = environment.configuration.copy(
-                        linuxUser = linuxUser.trim().ifEmpty { "root" },
-                        homeDir = homeDir.trim().ifEmpty { "/root" },
-                        runtime = environment.configuration.runtime.copy(
-                            sharedStorageEnabled = sharedStorage
+                    if (isFormValid) {
+                        val sanitizedUser = linuxUser.trim().ifEmpty { "root" }
+                        val sanitizedHome = UsernameValidator.sanitizeHomeDir(sanitizedUser, homeDir.trim().ifEmpty { "/root" })
+                        val newConfig = environment.configuration.copy(
+                            linuxUser = sanitizedUser,
+                            homeDir = sanitizedHome,
+                            runtime = environment.configuration.runtime.copy(
+                                sharedStorageEnabled = sharedStorage
+                            )
                         )
-                    )
-                    onSave(newConfig)
+                        onSave(newConfig)
+                    }
                 },
+                enabled = isFormValid,
                 isAccent = true,
                 shape = RoundedCornerShape(10.dp),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)

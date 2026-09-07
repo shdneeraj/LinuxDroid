@@ -210,6 +210,11 @@ validate_inputs() {
     if [[ "${USERNAME}" == "root" ]]; then
         log_fatal "Cannot use 'root' as the user account. Please specify a non-root username."
     fi
+    case "${USERNAME}" in
+        daemon|bin|sys|sync|games|man|lp|mail|news|uucp|proxy|www-data|backup|list|irc|gnats|nobody|systemd-*|messagebus|_apt|sshd|pulse|audio|video|render|input|sudo)
+            log_fatal "Username '${USERNAME}' is a reserved system account and cannot be used."
+            ;;
+    esac
 
     # Validate Password
     if [[ -z "${PASSWORD}" ]]; then
@@ -364,7 +369,11 @@ execute_in_guest() {
         fi
     fi
 
-    log_info "Executing inside PRoot: ${cmd}"
+    local log_cmd="${cmd}"
+    if [[ "${log_cmd}" =~ --password[[:space:]]+([^[:space:]]+) ]]; then
+        log_cmd="${log_cmd/--password ${BASH_REMATCH[1]}/--password [REDACTED]}"
+    fi
+    log_info "Executing inside PRoot: ${log_cmd}"
     "${PROOT_BIN}" \
         -r "${ROOTFS_DIR}" \
         -0 \
@@ -671,6 +680,7 @@ guest_configure_user() {
 
     echo "${USERNAME}:${PASSWORD}" | chpasswd
     echo "root:${PASSWORD}" | chpasswd
+    unset PASSWORD LINUXDROID_PASSWORD
 
     for grp in sudo audio video plugdev users render input; do
         if getent group "${grp}" >/dev/null 2>&1; then
@@ -773,7 +783,7 @@ guest_mandatory_cleanup() {
 
     rm -f /usr/sbin/policy-rc.d
     rm -rf /tmp/linuxdroid-packages
-    rm -rf /var/lib/apt/lists/*
+    # Retain /var/lib/apt/lists/ populated by apt-get update to maintain package database validity
     mkdir -p /var/lib/apt/lists/partial
     rm -rf /tmp/* /var/tmp/*
 
@@ -930,7 +940,9 @@ main() {
         log_step "${STAGE_CONFIGURING}"
         log_info "Entering PRoot guest environment for provisioning..."
 
-        execute_in_guest "/tmp/install_rootfs.sh --in-guest --distro '${DISTRO}' --release '${RELEASE}' --username '${USERNAME}' --password '${PASSWORD}' --rootfs /"
+        export LINUXDROID_PASSWORD="${PASSWORD}"
+        execute_in_guest "/tmp/install_rootfs.sh --in-guest --distro '${DISTRO}' --release '${RELEASE}' --username '${USERNAME}' --rootfs /"
+        unset LINUXDROID_PASSWORD PASSWORD
 
         rm -f "${ROOTFS_DIR}/tmp/install_rootfs.sh"
 
