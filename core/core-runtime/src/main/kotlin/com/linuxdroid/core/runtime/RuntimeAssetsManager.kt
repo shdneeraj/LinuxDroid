@@ -568,14 +568,16 @@ class RuntimeAssetsManager(
      * Reads the bundled PACKAGES_MANIFEST.txt if present.
      */
     fun readPackagesManifest(): List<GraphicalPackageAssetMetadata> {
-        return try {
-            val manifestPath = "$packagesAssetRoot/PACKAGES_MANIFEST.txt"
-            val text = context.assets.open(manifestPath).bufferedReader().use { it.readText() }
-            parsePackagesManifest(text)
-        } catch (e: Exception) {
-            log.debug("No PACKAGES_MANIFEST.txt bundled: ${e.message}")
-            emptyList()
+        val searchRoots = listOf(packagesAssetRoot, "linux")
+        for (root in searchRoots) {
+            try {
+                val manifestPath = "$root/PACKAGES_MANIFEST.txt"
+                val text = context.assets.open(manifestPath).bufferedReader().use { it.readText() }
+                val parsed = parsePackagesManifest(text)
+                if (parsed.isNotEmpty()) return parsed
+            } catch (_: Exception) {}
         }
+        return emptyList()
     }
 
     /**
@@ -586,50 +588,53 @@ class RuntimeAssetsManager(
         val targetDir = packagesInstallDir()
         val manifest = readPackagesManifest().associateBy { it.fileName }
         val extracted = mutableListOf<File>()
+        val seen = mutableSetOf<String>()
 
-        return try {
-            val assetList = context.assets.list(packagesAssetRoot) ?: emptyArray()
-            for (item in assetList) {
-                if (!item.endsWith(".deb")) continue
-                val targetFile = File(targetDir, item)
-                val expectedMeta = manifest[item]
-                val expectedSha = expectedMeta?.sha256
+        val searchRoots = listOf(packagesAssetRoot, "linux")
+        for (root in searchRoots) {
+            try {
+                val assetList = context.assets.list(root) ?: emptyArray()
+                for (item in assetList) {
+                    if (!item.endsWith(".deb") || !seen.add(item)) continue
+                    val targetFile = File(targetDir, item)
+                    val expectedMeta = manifest[item]
+                    val expectedSha = expectedMeta?.sha256
 
-                if (targetFile.exists() && targetFile.length() > 0L) {
-                    if (expectedSha == null || verifyChecksum(targetFile, expectedSha)) {
-                        extracted.add(targetFile)
-                        continue
+                    if (targetFile.exists() && targetFile.length() > 0L) {
+                        if (expectedSha == null || verifyChecksum(targetFile, expectedSha)) {
+                            extracted.add(targetFile)
+                            continue
+                        }
+                    }
+
+                    val staging = File(targetDir, ".$item.part")
+                    try {
+                        context.assets.open("$root/$item").use { input ->
+                            staging.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        if (expectedSha != null && !verifyChecksum(staging, expectedSha)) {
+                            staging.delete()
+                            log.error("Package $item checksum verification failed; aborting extraction.")
+                            continue
+                        }
+                        if (targetFile.exists()) targetFile.delete()
+                        if (staging.renameTo(targetFile)) {
+                            targetFile.setReadable(true, false)
+                            extracted.add(targetFile)
+                            log.info("Extracted packaged deb: $item -> ${targetFile.absolutePath}")
+                        } else {
+                            staging.delete()
+                        }
+                    } catch (e: Exception) {
+                        staging.delete()
+                        log.warn("Failed extracting package $item: ${e.message}")
                     }
                 }
-
-                val staging = File(targetDir, ".$item.part")
-                try {
-                    context.assets.open("$packagesAssetRoot/$item").use { input ->
-                        staging.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    if (expectedSha != null && !verifyChecksum(staging, expectedSha)) {
-                        staging.delete()
-                        log.error("Package $item checksum verification failed; aborting extraction.")
-                        continue
-                    }
-                    if (targetFile.exists()) targetFile.delete()
-                    if (staging.renameTo(targetFile)) {
-                        targetFile.setReadable(true, false)
-                        extracted.add(targetFile)
-                        log.info("Extracted packaged deb: $item -> ${targetFile.absolutePath}")
-                    } else {
-                        staging.delete()
-                    }
-                } catch (e: Exception) {
-                    staging.delete()
-                    log.warn("Failed extracting package $item: ${e.message}")
-                }
+            } catch (e: Exception) {
+                log.warn("Failed listing package assets in $root: ${e.message}")
             }
-            extracted
-        } catch (e: Exception) {
-            log.warn("Failed listing package assets: ${e.message}")
-            extracted
         }
+        return extracted
     }
 
     /**
