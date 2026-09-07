@@ -51,12 +51,22 @@ class DefaultSessionManager(
     private val _sessions = MutableStateFlow<Map<SessionId, Session>>(emptyMap())
     override val sessions: Flow<Map<SessionId, Session>> = _sessions.asStateFlow()
 
-    override suspend fun startSession(environment: Environment): Session = withContext(Dispatchers.IO) {
+    override suspend fun startSession(
+        environment: Environment,
+        startMode: StartMode,
+    ): Session = withContext(Dispatchers.IO) {
         val sessionId = SessionId.generate()
         log.withEnvironment(environment.id).info(
-            "Initiating session startup sequence: Session=$sessionId for ${environment.id}",
-            details = mapOf("sessionId" to sessionId.value, "environmentId" to environment.id.value, "distro" to environment.distribution.name)
+            "Initiating session startup sequence: Session=$sessionId for ${environment.id} startMode=$startMode",
+            details = mapOf(
+                "sessionId" to sessionId.value,
+                "environmentId" to environment.id.value,
+                "distro" to environment.distribution.name,
+                "startMode" to startMode.name,
+            )
         )
+        log.withEnvironment(environment.id).info("[RUNTIME] Start requested")
+        log.withEnvironment(environment.id).info("[RUNTIME] startMode=${startMode.name}")
 
         // 1. Validate Environment & Rootfs
         log.withEnvironment(environment.id).info("[SESSION_STEP_1] Validating environment and rootfs directory")
@@ -73,6 +83,7 @@ class DefaultSessionManager(
             id = sessionId,
             environmentId = environment.id,
             state = SessionState.STARTING,
+            startMode = startMode,
             startedAt = System.currentTimeMillis(),
         )
         sessionMap[sessionId] = session
@@ -84,7 +95,9 @@ class DefaultSessionManager(
         try {
             // 2. Initialize and start Runtime
             log.withEnvironment(environment.id).info("[SESSION_STEP_2] Preparing and initializing PRoot runtime backend")
-            session = session.copy(state = SessionState.STARTING_RUNTIME)
+            session = session.copy(
+                state = if (startMode == StartMode.GUI) SessionState.STARTING_RUNTIME else SessionState.CLI_STARTING
+            )
             sessionMap[sessionId] = session
             _sessions.value = sessionMap.toMap()
 
@@ -97,6 +110,7 @@ class DefaultSessionManager(
             val shellResult = runtimeBackend.executeAndWait(
                 environment = environment,
                 command = listOf("/bin/sh", "-c", "uname -a && echo 'SHELL_ACTIVE'"),
+                extraEnv = mapOf("LINUXDROID_START_MODE" to startMode.name),
                 timeoutMs = 10_000
             )
             if (shellResult.exitCode != 0 || !shellResult.stdout.contains("SHELL_ACTIVE")) {
@@ -116,6 +130,23 @@ class DefaultSessionManager(
             _sessions.value = sessionMap.toMap()
             persistSessionState(session)
             log.withEnvironment(environment.id).info("[INFO] Guest ready")
+
+            if (startMode == StartMode.CLI) {
+                log.withEnvironment(environment.id).info("[RUNTIME] CLI session requested")
+                val rootfsDir = storage.rootfsDir(environment.id)
+                val initFile = File(rootfsDir, GuestInit.GUEST_INIT_PATH.removePrefix("/"))
+                if (!initFile.exists()) {
+                    initFile.parentFile?.mkdirs()
+                    initFile.writeText(GuestInit.SCRIPT_CONTENT)
+                    initFile.setExecutable(true, false)
+                }
+                session = session.copy(state = SessionState.CLI_READY)
+                sessionMap[sessionId] = session
+                _sessions.value = sessionMap.toMap()
+                persistSessionState(session)
+                log.withEnvironment(environment.id).info("[RUNTIME] CLI_READY")
+                return@withContext session
+            }
 
             // 4. Initialize GPU
             log.withEnvironment(environment.id).info("[SESSION_STEP_4] Initializing GPU detection")
@@ -157,6 +188,7 @@ class DefaultSessionManager(
                                 command = argv,
                                 workingDirectory = "/home/user",
                                 extraEnv = mapOf(
+                                    "LINUXDROID_START_MODE" to StartMode.GUI.name,
                                     "WAYLAND_DISPLAY" to waylandSocket,
                                     "XDG_RUNTIME_DIR" to "/tmp",
                                     "DISPLAY" to ":0",
@@ -210,6 +242,7 @@ class DefaultSessionManager(
             _sessions.value = sessionMap.toMap()
             persistSessionState(session)
             log.withEnvironment(environment.id).info("[INFO] Starting LDDM")
+            log.withEnvironment(environment.id).info("[LDDM] Starting graphical session")
 
             log.withEnvironment(environment.id).info("[SESSION_STEP_8] Launching graphical session via Guest Init -> LDDM ($lddmPath)")
             val sessionProcess = runtimeBackend.execute(
@@ -217,6 +250,7 @@ class DefaultSessionManager(
                 command = listOf(lddmPath),
                 workingDirectory = "/home/user",
                 extraEnv = mapOf(
+                    "LINUXDROID_START_MODE" to StartMode.GUI.name,
                     "WAYLAND_DISPLAY" to waylandSocket,
                     "XDG_RUNTIME_DIR" to userRuntimeDir,
                     "DISPLAY" to ":0",
@@ -234,15 +268,18 @@ class DefaultSessionManager(
                 sessionProcess = sessionProcess,
                 initialSession = session.copy(
                     state = SessionState.WESTON_STARTING,
+                    startMode = StartMode.GUI,
                     waylandSocket = waylandSocket,
                     display = if (environment.configuration.desktop.xwaylandEnabled) ":0" else null,
                     compositorPid = sessionProcess.pid,
                     runtimePid = sessionProcess.pid,
                 ),
             )
+            log.withEnvironment(environment.id).info("[RUNTIME] GUI_READY")
             startSessionSupervision(environment, sessionId, sessionProcess)
             runningSession
         } catch (e: Exception) {
+            val failedState = if (startMode == StartMode.GUI) SessionState.GUI_FAILED else SessionState.CLI_FAILED
             log.withEnvironment(environment.id).error(
                 "Session startup failure at stage ${session.state} for $sessionId: ${e.message}",
                 throwable = e,
@@ -251,11 +288,12 @@ class DefaultSessionManager(
                     "sessionId" to sessionId.value,
                     "environmentId" to environment.id.value,
                     "failedStage" to session.state.name,
+                    "startMode" to startMode.name,
                 )
             )
             val failedSession = session.copy(
-                state = SessionState.FAILED,
-                failureMessage = e.message ?: "Failed to start session",
+                state = failedState,
+                failureMessage = e.message ?: "Failed to start $startMode session",
                 stoppedAt = System.currentTimeMillis(),
             )
             sessionMap[sessionId] = failedSession

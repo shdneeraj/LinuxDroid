@@ -11,6 +11,7 @@ import com.linuxdroid.core.logging.LinuxDroidLogger
 import com.linuxdroid.core.logging.LogSubsystem
 import com.linuxdroid.core.model.*
 import com.linuxdroid.core.runtime.RuntimeBackend
+import com.linuxdroid.core.session.SessionManager
 import com.linuxdroid.linux.bootstrap.RootfsBootstrapper
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -26,6 +27,7 @@ class EnvironmentViewModel @Inject constructor(
     private val storage: EnvironmentStorage,
     private val runtimeBackend: RuntimeBackend,
     private val bootstrapper: RootfsBootstrapper,
+    private val sessionManager: SessionManager,
 ) : ViewModel() {
 
     private val log = LinuxDroidLogger(LogSubsystem.APPLICATION)
@@ -140,11 +142,11 @@ class EnvironmentViewModel @Inject constructor(
         }
     }
 
-    fun startEnvironment(environment: Environment) {
+    fun startEnvironment(environment: Environment, startMode: StartMode = StartMode.GUI) {
         viewModelScope.launch(Dispatchers.IO) {
             val envId = environment.id.value
             try {
-                log.info("Starting runtime for $envId")
+                log.info("[RUNTIME] Start requested: env=$envId startMode=${startMode.name}")
                 dao.updateState(
                     id = envId,
                     state = EnvironmentState.STARTING.name,
@@ -152,9 +154,7 @@ class EnvironmentViewModel @Inject constructor(
                     failureMessage = null,
                 )
 
-                runtimeBackend.prepare(environment)
-                runtimeBackend.initialize(environment)
-                runtimeBackend.start(environment)
+                sessionManager.startSession(environment, startMode)
 
                 dao.updateState(
                     id = envId,
@@ -165,9 +165,9 @@ class EnvironmentViewModel @Inject constructor(
 
                 // Start Foreground Service
                 LinuxSessionService.start(context, environment.name)
-                log.info("Environment $envId is now RUNNING")
+                log.info("Environment $envId is now RUNNING (startMode=${startMode.name})")
             } catch (e: Exception) {
-                log.error("Failed to start environment $envId", e)
+                log.error("Failed to start environment $envId in ${startMode.name} mode", e)
                 dao.updateState(
                     id = envId,
                     state = EnvironmentState.FAILED.name,
@@ -191,7 +191,12 @@ class EnvironmentViewModel @Inject constructor(
                     failureMessage = null,
                 )
 
-                runtimeBackend.stop(environment)
+                val activeSession = sessionManager.getSession(environment.id)
+                if (activeSession != null) {
+                    sessionManager.stopSession(activeSession.id)
+                } else {
+                    runtimeBackend.stop(environment)
+                }
 
                 dao.updateState(
                     id = envId,
@@ -201,7 +206,7 @@ class EnvironmentViewModel @Inject constructor(
                 )
 
                 // Stop foreground service if no environments are running
-                LinuxSessionService.stop(context)
+                LinuxSessionService.stop(context, envId)
                 log.info("Environment $envId is now STOPPED")
             } catch (e: Exception) {
                 log.error("Failed to stop environment $envId", e)
@@ -215,12 +220,17 @@ class EnvironmentViewModel @Inject constructor(
         }
     }
 
-    fun restartEnvironment(environment: Environment) {
+    fun restartEnvironment(environment: Environment, startMode: StartMode = StartMode.GUI) {
         viewModelScope.launch(Dispatchers.IO) {
             val envId = environment.id.value
             try {
-                log.info("Restarting environment $envId")
-                runtimeBackend.stop(environment)
+                log.info("Restarting environment $envId (startMode=${startMode.name})")
+                val activeSession = sessionManager.getSession(environment.id)
+                if (activeSession != null) {
+                    sessionManager.stopSession(activeSession.id)
+                } else {
+                    runtimeBackend.stop(environment)
+                }
                 runtimeBackend.initialize(environment)
 
                 if (environment.state == EnvironmentState.FAILED) {
@@ -250,7 +260,7 @@ class EnvironmentViewModel @Inject constructor(
                 } else {
                     environment
                 }
-                runtimeBackend.start(readyEnv)
+                sessionManager.startSession(readyEnv, startMode)
 
                 dao.updateState(
                     id = envId,
@@ -259,7 +269,7 @@ class EnvironmentViewModel @Inject constructor(
                     failureMessage = null,
                 )
                 LinuxSessionService.start(context, environment.name)
-                log.info("Environment $envId restarted and is RUNNING")
+                log.info("Environment $envId restarted and is RUNNING (startMode=${startMode.name})")
             } catch (e: Exception) {
                 log.error("Failed to restart environment $envId", e)
                 dao.updateState(

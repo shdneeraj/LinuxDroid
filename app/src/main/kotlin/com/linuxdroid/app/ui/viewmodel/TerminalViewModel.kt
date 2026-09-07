@@ -21,7 +21,9 @@ import com.linuxdroid.core.runtime.PtySession
 import com.linuxdroid.core.runtime.RuntimeBackend
 import com.linuxdroid.core.runtime.TerminalBuffer
 import com.linuxdroid.core.runtime.TerminalLineData
+import com.linuxdroid.app.service.LinuxSessionService
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -36,6 +38,7 @@ import javax.inject.Inject
 @HiltViewModel
 class TerminalViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
+    @param:ApplicationContext private val context: Context,
     private val dao: EnvironmentDao,
     private val runtimeBackend: RuntimeBackend,
     private val logExporter: com.linuxdroid.core.diagnostics.RuntimeLogExporter,
@@ -107,7 +110,8 @@ class TerminalViewModel @Inject constructor(
                 try {
                     // Ensure runtime backend is prepared and started
                     if (env.state != EnvironmentState.RUNNING) {
-                        terminalBuffer.append("Starting Linux runtime…\r\n".toByteArray(), "Starting Linux runtime…\r\n".length)
+                        log.info("[RUNTIME] Start requested: env=${env.id} startMode=CLI")
+                        terminalBuffer.append("Starting Linux runtime (CLI mode)…\r\n".toByteArray(), "Starting Linux runtime (CLI mode)…\r\n".length)
                         val readyEnv = when (env.state) {
                             EnvironmentState.FAILED -> {
                                 dao.updateState(
@@ -136,6 +140,10 @@ class TerminalViewModel @Inject constructor(
                             timestamp = System.currentTimeMillis(),
                             failureMessage = null,
                         )
+                        LinuxSessionService.start(context, env.name)
+                        log.info("[RUNTIME] CLI_READY")
+                    } else {
+                        log.info("Linux environment already active for ${env.id}; attaching terminal shell without restarting runtime")
                     }
 
                     // Close existing session if any

@@ -173,7 +173,7 @@ fun HomeScreen(
                 NeuGuiLaunchCard(
                     environment = activeEnv,
                     onClick = {
-                        navController.navigate(Screen.Terminal.route(activeEnv.id.value))
+                        navController.navigate(Screen.Desktop.route(activeEnv.id.value))
                     }
                 )
 

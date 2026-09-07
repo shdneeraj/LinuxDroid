@@ -140,7 +140,9 @@ fun EnvironmentListScreen(
                         onShellClick = {
                             navController.navigate(Screen.Terminal.route(env.id.value))
                         },
-                        onDesktopClick = { envForDesktop = env },
+                        onDesktopClick = {
+                            navController.navigate(Screen.Desktop.route(env.id.value))
+                        },
                         onSettingsClick = { envForSettings = env },
                         onStorageClick = { envForStorage = env },
                         onDiagnosticsClick = { navController.navigate(Screen.Diagnostics.route) },

@@ -59,7 +59,9 @@ class DesktopSession(
             environment = environment,
             command = listOf(lddmPath),
             workingDirectory = "/home/user",
+            startMode = StartMode.GUI,
             extraEnv = mapOf(
+                "LINUXDROID_START_MODE" to StartMode.GUI.name,
                 "WAYLAND_DISPLAY" to waylandSocket,
                 "XDG_RUNTIME_DIR" to userRuntimeDir,
                 "DISPLAY" to ":0",
@@ -75,6 +77,7 @@ class DesktopSession(
             id = sessionId,
             environmentId = environment.id,
             state = SessionState.GUI_READY,
+            startMode = StartMode.GUI,
             waylandSocket = waylandSocket,
             display = if (environment.configuration.desktop.xwaylandEnabled) ":0" else null,
             compositorPid = procHandle.pid,

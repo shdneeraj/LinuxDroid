@@ -51,6 +51,7 @@ import com.linuxdroid.app.ui.viewmodel.EnvironmentViewModel
 import com.linuxdroid.core.display.GuiSurfaceView
 import com.linuxdroid.core.model.Environment
 import com.linuxdroid.core.model.EnvironmentState
+import com.linuxdroid.core.model.StartMode
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
@@ -64,7 +65,9 @@ enum class DesktopPhase {
     /** LightDM / GDM style Linux Display Manager login screen */
     LOGIN,
     /** Active Wayland / X11 Graphical Desktop workspace */
-    DESKTOP
+    DESKTOP,
+    /** Graphical session startup failure screen (Section 10) */
+    FAILED,
 }
 
 /**
@@ -124,13 +127,15 @@ fun DesktopScreen(
     // Auto-start environment if stopped when entering boot phase
     LaunchedEffect(environment.id.value) {
         if (!isAlreadyRunning && environment.state != EnvironmentState.RUNNING && environment.state != EnvironmentState.STARTING) {
-            environmentViewModel.startEnvironment(environment)
+            environmentViewModel.startEnvironment(environment, StartMode.GUI)
         }
     }
 
-    // Automatically transition to DESKTOP when environment becomes active
+    // Automatically transition to DESKTOP when environment becomes active, or FAILED on error
     LaunchedEffect(environment.state) {
-        if (environment.state == EnvironmentState.RUNNING && autoLoginEnabled) {
+        if (environment.state == EnvironmentState.FAILED) {
+            currentPhase = DesktopPhase.FAILED
+        } else if (environment.state == EnvironmentState.RUNNING && autoLoginEnabled) {
             currentPhase = DesktopPhase.DESKTOP
         }
     }
@@ -176,6 +181,7 @@ fun DesktopScreen(
                     },
                     onReboot = {
                         currentPhase = DesktopPhase.BOOTING
+                        environmentViewModel.startEnvironment(environment, StartMode.GUI)
                     },
                     onPowerOff = {
                         environmentViewModel.stopEnvironment(environment)
@@ -197,6 +203,21 @@ fun DesktopScreen(
                         navController.popBackStack()
                     },
                     onNavigateHome = {
+                        navController.popBackStack()
+                    }
+                )
+            }
+            DesktopPhase.FAILED -> {
+                LinuxGuiFailureScreen(
+                    environment = environment,
+                    onRetryGui = {
+                        currentPhase = DesktopPhase.BOOTING
+                        environmentViewModel.startEnvironment(environment, StartMode.GUI)
+                    },
+                    onOpenTerminal = {
+                        navController.navigate(Screen.Terminal.route(environment.id.value))
+                    },
+                    onExit = {
                         navController.popBackStack()
                     }
                 )
@@ -1308,4 +1329,102 @@ private fun ModifierPill(
         )
     }
 }
+
+/**
+ * 4. Deterministic GUI Startup Failure Screen (Section 10).
+ * Never silently switches GUI -> CLI. Exposes [ Retry GUI ] and [ Open Terminal ].
+ */
+@Composable
+private fun LinuxGuiFailureScreen(
+    environment: Environment,
+    onRetryGui: () -> Unit,
+    onOpenTerminal: () -> Unit,
+    onExit: () -> Unit,
+) {
+    val neuColors = NeuTheme.colors
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(neuColors.background)
+            .padding(24.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        NeuCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            elevation = 6.dp,
+            shape = RoundedCornerShape(20.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(CircleShape)
+                        .background(neuColors.error.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = neuColors.error,
+                        modifier = Modifier.size(32.dp),
+                    )
+                }
+
+                Text(
+                    text = "GUI Startup Failed",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    color = neuColors.textPrimary,
+                    textAlign = TextAlign.Center,
+                )
+
+                Text(
+                    text = environment.failureMessage ?: "The Linux graphical desktop session failed to start.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontFamily = SfMono,
+                    color = neuColors.textSecondary,
+                    textAlign = TextAlign.Center,
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                NeuButton(
+                    onClick = onRetryGui,
+                    modifier = Modifier.fillMaxWidth(),
+                    isAccent = true,
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Retry GUI", fontWeight = FontWeight.SemiBold)
+                }
+
+                NeuButton(
+                    onClick = onOpenTerminal,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Open Terminal", fontWeight = FontWeight.SemiBold)
+                }
+
+                TextButton(onClick = onExit) {
+                    Text("Return Home", color = neuColors.textSecondary)
+                }
+            }
+        }
+    }
+}
+
 

@@ -54,6 +54,7 @@ data class RuntimeSpec(
     val bootstrapPolicy: BootstrapPolicy = BootstrapPolicy.BOOTSTRAP_USERSPACE,
     val executionTarget: ExecutionTarget = ExecutionTarget.GUEST,
     val guestInitPath: String? = DEFAULT_GUEST_INIT_PATH,
+    val startMode: StartMode = StartMode.GUI,
     val customProotPath: String? = null,
     val customLoaderPath: String? = null,
     val tmpDirPath: String? = null,
@@ -83,6 +84,7 @@ data class RuntimeSpec(
             logFilePath: String? = null,
             executionTarget: ExecutionTarget = ExecutionTarget.GUEST,
             guestInitPath: String? = DEFAULT_GUEST_INIT_PATH,
+            startMode: StartMode = StartMode.GUI,
         ): RuntimeSpec {
             val configuredUser = environment.configuration.linuxUser.ifBlank { "root" }
             val configuredHome = environment.configuration.homeDir.ifBlank {
@@ -106,6 +108,7 @@ data class RuntimeSpec(
                 put("LC_ALL", "C.UTF-8")
                 put("TMPDIR", "/tmp")
                 put("PWD", safeWorkingDir)
+                put("LINUXDROID_START_MODE", startMode.name)
                 putAll(environment.configuration.runtime.extraEnv)
                 putAll(extraEnv)
             }
@@ -134,6 +137,7 @@ data class RuntimeSpec(
                 command = command,
                 executionTarget = executionTarget,
                 guestInitPath = guestInitPath,
+                startMode = startMode,
                 customProotPath = environment.configuration.runtime.customProotPath,
                 tmpDirPath = tmpDirPath,
                 shmDirPath = shmDirPath,

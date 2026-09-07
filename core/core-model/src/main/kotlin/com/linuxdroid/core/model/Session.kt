@@ -36,6 +36,14 @@ enum class SessionState {
     LDDE_READY,
     /** Complete graphical session is operational (Guest + LDDM + Weston + LDDE). */
     GUI_READY,
+    /** Graphical session failed to start or unrecoverably crashed. */
+    GUI_FAILED,
+    /** Terminal CLI session is initializing. */
+    CLI_STARTING,
+    /** Terminal CLI session is ready and running. */
+    CLI_READY,
+    /** Terminal CLI session failed. */
+    CLI_FAILED,
     /** Backward compatibility alias for GUI_READY / active session. */
     RUNNING,
     /** Backward compatibility alias for STARTING / GUEST_READY. */
@@ -69,6 +77,8 @@ enum class SessionState {
         LDDE_STARTING,
         LDDE_READY,
         GUI_READY,
+        CLI_STARTING,
+        CLI_READY,
         RUNNING,
         STARTING_RUNTIME,
         STARTING_COMPOSITOR,
@@ -79,13 +89,14 @@ enum class SessionState {
 }
 
 /**
- * A Session represents a complete active Linux graphical environment.
- * It owns the runtime, compositor, desktop, input, audio, and network.
+ * A Session represents a complete active Linux graphical or CLI environment.
+ * It owns the runtime, compositor/shell, and associated subsystems.
  */
 data class Session(
     val id: SessionId,
     val environmentId: EnvironmentId,
     val state: SessionState,
+    val startMode: StartMode = StartMode.GUI,
     val startedAt: Long = System.currentTimeMillis(),
     val stoppedAt: Long? = null,
     val failureMessage: String? = null,

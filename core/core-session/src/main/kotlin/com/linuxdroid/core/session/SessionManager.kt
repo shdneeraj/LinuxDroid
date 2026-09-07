@@ -18,8 +18,8 @@ interface SessionManager {
     /** Active sessions by SessionId. */
     val sessions: Flow<Map<SessionId, Session>>
 
-    /** Creates and starts a new session for the given environment. */
-    suspend fun startSession(environment: Environment): Session
+    /** Creates and starts a new session for the given environment in the requested [startMode]. */
+    suspend fun startSession(environment: Environment, startMode: StartMode = StartMode.GUI): Session
 
     /** Stops a running session. */
     suspend fun stopSession(sessionId: SessionId)
