@@ -24,8 +24,8 @@ class ComponentProvenanceManager(
 
     companion object {
         const val PROOT_COMMIT = "caadcae0e7697ec29f02e231a3a88866561aacd0"
-        const val LDDM_COMMIT = "aa6c3d38f874244bcd60162889a914637e4ddf46"
-        const val LDDE_COMMIT = "9ee575e963d6d1ff4086fc16fb119daf6ead6db2"
+        const val LDDM_COMMIT = "6ad1e190d76f87e9c4ef6c14155ed09f6f625a24"
+        const val LDDE_COMMIT = "1b8c170081b8c8f7085b3f7457d42f12d963b58c"
 
         val DEFAULT_COMPONENTS: Map<String, SubmoduleComponent> = linkedMapOf(
             "PRoot" to SubmoduleComponent("PRoot", "LinuxDroidapp/proot", "vendor/proot", PROOT_COMMIT),

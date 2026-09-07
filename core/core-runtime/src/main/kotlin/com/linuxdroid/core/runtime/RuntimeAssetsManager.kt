@@ -494,5 +494,205 @@ class RuntimeAssetsManager(
             }
             return digest.digest().joinToString("") { "%02x".format(it) }
         }
+
+        /**
+         * Parses a PACKAGES_MANIFEST.txt payload into a list of [GraphicalPackageAssetMetadata].
+         */
+        fun parsePackagesManifest(text: String): List<GraphicalPackageAssetMetadata> {
+            val list = mutableListOf<GraphicalPackageAssetMetadata>()
+            var currentPkg: String? = null
+            var currentVer: String? = null
+            var currentArch: String? = null
+            var currentFile: String? = null
+            var currentSha: String? = null
+
+            fun flush() {
+                if (currentPkg != null && currentFile != null) {
+                    list.add(
+                        GraphicalPackageAssetMetadata(
+                            packageName = currentPkg!!,
+                            version = currentVer ?: "unknown",
+                            architecture = currentArch ?: "arm64",
+                            fileName = currentFile!!,
+                            sha256 = currentSha ?: "",
+                        ),
+                    )
+                }
+                currentPkg = null
+                currentVer = null
+                currentArch = null
+                currentFile = null
+                currentSha = null
+            }
+
+            text.lineSequence().forEach { line ->
+                val trimmed = line.trim()
+                if (trimmed.isBlank()) {
+                    flush()
+                    return@forEach
+                }
+                val idx = trimmed.indexOf(':')
+                if (idx > 0) {
+                    val key = trimmed.substring(0, idx).trim().lowercase(Locale.US)
+                    val value = trimmed.substring(idx + 1).trim()
+                    when (key) {
+                        "package" -> {
+                            if (currentPkg != null) flush()
+                            currentPkg = value
+                        }
+                        "version" -> currentVer = value
+                        "architecture", "arch" -> currentArch = value
+                        "file", "filename" -> currentFile = value
+                        "sha256" -> currentSha = value
+                    }
+                }
+            }
+            flush()
+            return list
+        }
+    }
+
+    /** Asset root under which bundled .deb packages are packaged. */
+    val packagesAssetRoot: String = "packages"
+
+    /** Asset root under which installer scripts are packaged. */
+    val scriptsAssetRoot: String = "scripts"
+
+    /** Absolute directory where extracted .deb packages are staged on device storage. */
+    fun packagesInstallDir(): File = File(context.filesDir, "packages").apply { mkdirs() }
+
+    /** Absolute directory where extracted scripts are staged on device storage. */
+    fun scriptsInstallDir(): File = File(context.filesDir, "scripts").apply { mkdirs() }
+
+    /**
+     * Reads the bundled PACKAGES_MANIFEST.txt if present.
+     */
+    fun readPackagesManifest(): List<GraphicalPackageAssetMetadata> {
+        return try {
+            val manifestPath = "$packagesAssetRoot/PACKAGES_MANIFEST.txt"
+            val text = context.assets.open(manifestPath).bufferedReader().use { it.readText() }
+            parsePackagesManifest(text)
+        } catch (e: Exception) {
+            log.debug("No PACKAGES_MANIFEST.txt bundled: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Extracts all bundled .deb packages to private storage, verifying checksums.
+     * Returns the list of extracted package files.
+     */
+    fun extractPackages(): List<File> {
+        val targetDir = packagesInstallDir()
+        val manifest = readPackagesManifest().associateBy { it.fileName }
+        val extracted = mutableListOf<File>()
+
+        return try {
+            val assetList = context.assets.list(packagesAssetRoot) ?: emptyArray()
+            for (item in assetList) {
+                if (!item.endsWith(".deb")) continue
+                val targetFile = File(targetDir, item)
+                val expectedMeta = manifest[item]
+                val expectedSha = expectedMeta?.sha256
+
+                if (targetFile.exists() && targetFile.length() > 0L) {
+                    if (expectedSha == null || verifyChecksum(targetFile, expectedSha)) {
+                        extracted.add(targetFile)
+                        continue
+                    }
+                }
+
+                val staging = File(targetDir, ".$item.part")
+                try {
+                    context.assets.open("$packagesAssetRoot/$item").use { input ->
+                        staging.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    if (expectedSha != null && !verifyChecksum(staging, expectedSha)) {
+                        staging.delete()
+                        log.error("Package $item checksum verification failed; aborting extraction.")
+                        continue
+                    }
+                    if (targetFile.exists()) targetFile.delete()
+                    if (staging.renameTo(targetFile)) {
+                        targetFile.setReadable(true, false)
+                        extracted.add(targetFile)
+                        log.info("Extracted packaged deb: $item -> ${targetFile.absolutePath}")
+                    } else {
+                        staging.delete()
+                    }
+                } catch (e: Exception) {
+                    staging.delete()
+                    log.warn("Failed extracting package $item: ${e.message}")
+                }
+            }
+            extracted
+        } catch (e: Exception) {
+            log.warn("Failed listing package assets: ${e.message}")
+            extracted
+        }
+    }
+
+    /**
+     * Resolves the extracted LDDM .deb package file, or null if unavailable.
+     */
+    fun getLddmPackage(): File? {
+        val pkgs = extractPackages()
+        return pkgs.firstOrNull { it.name.startsWith("linuxdroid-display-manager") }
+            ?: File(packagesInstallDir(), "linuxdroid-display-manager_0.1.0_arm64.deb").takeIf { it.exists() }
+    }
+
+    /**
+     * Resolves the extracted LDDE .deb package file, or null if unavailable.
+     */
+    fun getLddePackage(): File? {
+        val pkgs = extractPackages()
+        return pkgs.firstOrNull { it.name.startsWith("linuxdroid-desktop-environment") }
+            ?: File(packagesInstallDir(), "linuxdroid-desktop-environment_1.0.0_arm64.deb").takeIf { it.exists() }
+    }
+
+    /**
+     * Extracts and marks executable the unified rootfs installer script.
+     */
+    fun extractInstallerScript(): File? {
+        val targetDir = scriptsInstallDir()
+        val scriptName = "install_rootfs.sh"
+        val targetFile = File(targetDir, scriptName)
+
+        return try {
+            val staging = File(targetDir, ".$scriptName.part")
+            context.assets.open("$scriptsAssetRoot/$scriptName").use { input ->
+                staging.outputStream().use { output -> input.copyTo(output) }
+            }
+            staging.setReadable(true, false)
+            staging.setExecutable(true, false)
+            NativeBridge.setExecutable(staging.absolutePath)
+
+            if (targetFile.exists()) targetFile.delete()
+            if (staging.renameTo(targetFile)) {
+                targetFile.setReadable(true, false)
+                targetFile.setExecutable(true, false)
+                NativeBridge.setExecutable(targetFile.absolutePath)
+                log.info("Extracted installer script -> ${targetFile.absolutePath}")
+                targetFile
+            } else {
+                staging.delete()
+                null
+            }
+        } catch (e: Exception) {
+            log.warn("Failed extracting $scriptName: ${e.message}")
+            if (targetFile.exists() && targetFile.canExecute()) targetFile else null
+        }
     }
 }
+
+/**
+ * Metadata for a bundled LinuxDroid graphical .deb package (LDDM, LDDE).
+ */
+data class GraphicalPackageAssetMetadata(
+    val packageName: String,
+    val version: String,
+    val architecture: String,
+    val fileName: String,
+    val sha256: String,
+)
+

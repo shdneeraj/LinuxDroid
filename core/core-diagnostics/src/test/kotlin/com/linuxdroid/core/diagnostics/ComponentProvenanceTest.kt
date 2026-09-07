@@ -25,11 +25,11 @@ class ComponentProvenanceTest {
 
         val lddm = manager.getComponent("LDDM")
         assertThat(lddm.repository).isEqualTo("LinuxDroidapp/LDDM")
-        assertThat(lddm.revision).isEqualTo("aa6c3d38f874244bcd60162889a914637e4ddf46")
+        assertThat(lddm.revision).isEqualTo("6ad1e190d76f87e9c4ef6c14155ed09f6f625a24")
 
         val ldde = manager.getComponent("LDDE")
         assertThat(ldde.repository).isEqualTo("LinuxDroidapp/LDDE")
-        assertThat(ldde.revision).isEqualTo("9ee575e963d6d1ff4086fc16fb119daf6ead6db2")
+        assertThat(ldde.revision).isEqualTo("1b8c170081b8c8f7085b3f7457d42f12d963b58c")
     }
 
     @Test
@@ -40,8 +40,8 @@ class ComponentProvenanceTest {
         val expected = """
 === LINUXDROID COMPONENTS ===
 PRoot:            LinuxDroidapp/proot@caadcae0e7697ec29f02e231a3a88866561aacd0
-LDDM:             LinuxDroidapp/LDDM@aa6c3d38f874244bcd60162889a914637e4ddf46
-LDDE:             LinuxDroidapp/LDDE@9ee575e963d6d1ff4086fc16fb119daf6ead6db2
+LDDM:             LinuxDroidapp/LDDM@6ad1e190d76f87e9c4ef6c14155ed09f6f625a24
+LDDE:             LinuxDroidapp/LDDE@1b8c170081b8c8f7085b3f7457d42f12d963b58c
 """.trimIndent()
 
         assertThat(formatted.trim()).isEqualTo(expected.trim())

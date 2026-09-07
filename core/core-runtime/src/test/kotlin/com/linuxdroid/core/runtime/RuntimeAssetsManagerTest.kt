@@ -80,4 +80,39 @@ class RuntimeAssetsManagerTest {
             file.delete()
         }
     }
+
+    @Test
+    fun `parsePackagesManifest parses multi-package manifest entries correctly`() {
+        val manifest = """
+            Package: linuxdroid-display-manager
+            Version: 0.1.0
+            Architecture: arm64
+            File: linuxdroid-display-manager_0.1.0_arm64.deb
+            SHA256: 4a00664135082d811e26a41a5aace0276057c542d0b1b96e2c5e039dc4789e85
+
+            Package: linuxdroid-desktop-environment
+            Version: 1.0.0
+            Architecture: arm64
+            File: linuxdroid-desktop-environment_1.0.0_arm64.deb
+            SHA256: e81cc199f340839aa7162f86276ff3a5a3aee3647086ff6a67d2456be8224552
+        """.trimIndent()
+
+        val list = RuntimeAssetsManager.parsePackagesManifest(manifest)
+        assertThat(list).hasSize(2)
+
+        val lddm = list[0]
+        assertThat(lddm.packageName).isEqualTo("linuxdroid-display-manager")
+        assertThat(lddm.version).isEqualTo("0.1.0")
+        assertThat(lddm.architecture).isEqualTo("arm64")
+        assertThat(lddm.fileName).isEqualTo("linuxdroid-display-manager_0.1.0_arm64.deb")
+        assertThat(lddm.sha256).isEqualTo("4a00664135082d811e26a41a5aace0276057c542d0b1b96e2c5e039dc4789e85")
+
+        val ldde = list[1]
+        assertThat(ldde.packageName).isEqualTo("linuxdroid-desktop-environment")
+        assertThat(ldde.version).isEqualTo("1.0.0")
+        assertThat(ldde.architecture).isEqualTo("arm64")
+        assertThat(ldde.fileName).isEqualTo("linuxdroid-desktop-environment_1.0.0_arm64.deb")
+        assertThat(ldde.sha256).isEqualTo("e81cc199f340839aa7162f86276ff3a5a3aee3647086ff6a67d2456be8224552")
+    }
 }
+

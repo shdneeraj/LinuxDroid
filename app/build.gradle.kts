@@ -266,8 +266,93 @@ val syncProotArtifacts = tasks.register("syncProotArtifacts") {
     }
 }
 
+val syncLinuxDroidAssets = tasks.register("syncLinuxDroidAssets") {
+    group = "distribution"
+    description = "Validates and synchronizes LDDM and LDDE ARM64 .deb packages and installer scripts into APK runtime assets"
+
+    val packagesAssetsDir = file("src/main/assets/packages")
+    val scriptsAssetsDir = file("src/main/assets/scripts")
+    val lddmPackagesDir = rootProject.file("vendor/LDDM/build-release/packages")
+    val lddeDistDir = rootProject.file("vendor/LDDE/dist")
+    val bootstrapScript = rootProject.file("linux/bootstrap/install_rootfs.sh")
+
+    outputs.dirs(packagesAssetsDir, scriptsAssetsDir)
+
+    doLast {
+        packagesAssetsDir.mkdirs()
+        scriptsAssetsDir.mkdirs()
+
+        // 1. Sync install_rootfs.sh
+        if (bootstrapScript.exists()) {
+            val destScript = File(scriptsAssetsDir, "install_rootfs.sh")
+            bootstrapScript.copyTo(destScript, overwrite = true)
+            destScript.setExecutable(true, false)
+        } else {
+            throw GradleException("Cannot build LinuxDroid APK: linux/bootstrap/install_rootfs.sh is missing.")
+        }
+
+        // 2. Find and validate LDDM deb
+        val lddmDeb = lddmPackagesDir.listFiles()?.firstOrNull {
+            it.name.startsWith("linuxdroid-display-manager") && it.name.endsWith(".deb") && it.name.contains("arm64")
+        } ?: File(packagesAssetsDir, "linuxdroid-display-manager_0.1.0_arm64.deb").takeIf { it.exists() }
+
+        if (lddmDeb == null || !lddmDeb.exists() || lddmDeb.length() == 0L) {
+            throw GradleException("Cannot build LinuxDroid APK: Missing ARM64 LDDM package (linuxdroid-display-manager_*_arm64.deb). Please run ./scripts/build-packages.sh.")
+        }
+
+        // 3. Find and validate LDDE deb
+        val lddeDeb = lddeDistDir.listFiles()?.firstOrNull {
+            it.name.startsWith("linuxdroid-desktop-environment") && it.name.endsWith(".deb") && it.name.contains("arm64")
+        } ?: File(packagesAssetsDir, "linuxdroid-desktop-environment_1.0.0_arm64.deb").takeIf { it.exists() }
+
+        if (lddeDeb == null || !lddeDeb.exists() || lddeDeb.length() == 0L) {
+            throw GradleException("Cannot build LinuxDroid APK: Missing ARM64 LDDE package (linuxdroid-desktop-environment_*_arm64.deb). Please run ./scripts/build-packages.sh.")
+        }
+
+        // Copy to assets if coming from vendor dirs
+        val lddmAsset = File(packagesAssetsDir, lddmDeb.name)
+        if (lddmDeb.absolutePath != lddmAsset.absolutePath) {
+            lddmDeb.copyTo(lddmAsset, overwrite = true)
+        }
+
+        val lddeAsset = File(packagesAssetsDir, lddeDeb.name)
+        if (lddeDeb.absolutePath != lddeAsset.absolutePath) {
+            lddeDeb.copyTo(lddeAsset, overwrite = true)
+        }
+
+        fun sha256(file: File): String {
+            val md = MessageDigest.getInstance("SHA-256")
+            return file.inputStream().use { input ->
+                val buf = ByteArray(8192)
+                var read: Int
+                while (input.read(buf).also { read = it } != -1) md.update(buf, 0, read)
+                md.digest().joinToString("") { b -> "%02x".format(b) }
+            }
+        }
+
+        val manifestFile = File(packagesAssetsDir, "PACKAGES_MANIFEST.txt")
+        manifestFile.writeText(
+            """
+            Package: linuxdroid-display-manager
+            Version: 0.1.0
+            Architecture: arm64
+            File: ${lddmAsset.name}
+            SHA256: ${sha256(lddmAsset)}
+
+            Package: linuxdroid-desktop-environment
+            Version: 1.0.0
+            Architecture: arm64
+            File: ${lddeAsset.name}
+            SHA256: ${sha256(lddeAsset)}
+            """.trimIndent() + "\n"
+        )
+    }
+}
+
 tasks.named("preBuild") {
     dependsOn(syncProotArtifacts)
+    dependsOn(syncLinuxDroidAssets)
 }
+
 
 
