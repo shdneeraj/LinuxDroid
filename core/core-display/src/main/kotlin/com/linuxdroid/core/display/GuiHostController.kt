@@ -95,5 +95,25 @@ class GuiHostController(
      * Returns an array of active windows currently tracked by the native compositor.
      */
     fun getActiveWindows(): Array<String> = bridge.getActiveWindows()
+
+    /**
+     * Sets the Wayland output scale factor (1, 2, 3, or 4).
+     */
+    fun setOutputScale(scale: Int) {
+        bridge.setOutputScale(scale)
+    }
+
+    /**
+     * Gets the current Wayland output scale factor.
+     */
+    fun getOutputScale(): Int = bridge.getOutputScale()
+
+    /**
+     * Dispatches a window action ("activate", "minimize", "maximize", "restore", "close")
+     * to a tracked window id.
+     */
+    fun performWindowAction(windowId: Long, action: String) {
+        bridge.performWindowAction(windowId, action)
+    }
 }
 

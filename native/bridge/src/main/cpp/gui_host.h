@@ -55,6 +55,8 @@ public:
 
     void processQueuedInput();
     void resetInput();
+    void setOutputScale(int32_t scale);
+    int32_t getOutputScale() const;
     void processPendingWindowActions();
     void enqueueWindowAction(uint64_t window_id, const std::string& action);
     void enqueueWindowAction(void* handle, const std::string& action, int32_t p1 = 0, int32_t p2 = 0);
@@ -120,6 +122,7 @@ private:
     int window_width_ = 0;
     int window_height_ = 0;
     int window_format_ = 0;
+    std::atomic<int32_t> output_scale_{1};
 
     bool init_success_ = false;
 };

@@ -1,9 +1,19 @@
 package com.linuxdroid.app.ui.screens
 
+import android.app.Activity
+import android.content.ClipboardManager
+import android.content.Context
+import android.view.KeyEvent
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import com.linuxdroid.native_bridge.NativeBridge
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -184,6 +194,9 @@ fun DesktopScreen(
                     },
                     onStopSession = {
                         environmentViewModel.stopEnvironment(environment)
+                        navController.popBackStack()
+                    },
+                    onNavigateHome = {
                         navController.popBackStack()
                     }
                 )
@@ -611,8 +624,23 @@ private fun LinuxLoginScreen(
     }
 }
 
+data class DesktopWindow(
+    val id: Long,
+    val appId: String,
+    val title: String
+)
+
 /**
  * 3. Graphical Desktop Workspace.
+ *
+ * Phase 10: Mobile Desktop UX
+ * - Touch / Trackpad mode switching
+ * - Immersive fullscreen toggle
+ * - Collapsible mobile toolbar with modifier keys (ESC, TAB, Ctrl, Alt, Super, Shift, Arrows)
+ * - Clipboard quick-paste
+ * - Task / Window switcher dialog
+ * - Dynamic display scaling (100%, 200%)
+ * - Deterministic 5-priority BackHandler
  */
 @Composable
 private fun LinuxDesktopWorkspace(
@@ -620,92 +648,664 @@ private fun LinuxDesktopWorkspace(
     onOpenTerminal: () -> Unit,
     onLockSession: () -> Unit,
     onStopSession: () -> Unit,
+    onNavigateHome: () -> Unit,
 ) {
     val neuColors = NeuTheme.colors
     val context = LocalContext.current
+    val activity = context as? Activity
     var surfaceViewRef by remember { mutableStateOf<GuiSurfaceView?>(null) }
 
-    Scaffold(
-        containerColor = Color(0xFF1E222B),
+    // UX state
+    var touchMode by remember { mutableStateOf(GuiSurfaceView.TouchMode.DIRECT) }
+    var isFullscreen by remember { mutableStateOf(false) }
+    var isToolbarExpanded by remember { mutableStateOf(true) }
+    var currentScale by remember { mutableStateOf(1) }
 
-        topBar = {
-            // macOS / XFCE Style Top Panel
-            Surface(
-                color = Color(0xFF161920),
-                shadowElevation = 4.dp,
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .statusBarsPadding()
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        DistroIcon(distribution = environment.distribution, size = 26.dp)
-                        Text(
-                            text = "Applications",
-                            fontFamily = SfPro,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                        )
-                        Surface(
-                            color = Color(0xFF2C3240),
-                            shape = RoundedCornerShape(4.dp),
-                        ) {
-                            Text(
-                                text = "XFCE4 • Wayland",
-                                fontFamily = SfMono,
-                                fontSize = 10.sp,
-                                color = neuColors.secondaryAccent,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            )
-                        }
-                    }
+    // Overlays and Dialogs
+    var showExitDialog by remember { mutableStateOf(false) }
+    var showWindowSwitcher by remember { mutableStateOf(false) }
+    var showScaleSelector by remember { mutableStateOf(false) }
+    var showSessionMenu by remember { mutableStateOf(false) }
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        IconButton(
-                            onClick = { surfaceViewRef?.toggleSoftKeyboard() },
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(Icons.Default.Keyboard, contentDescription = "Keyboard", tint = neuColors.primaryAccent, modifier = Modifier.size(16.dp))
-                        }
-                        IconButton(onClick = onOpenTerminal, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Terminal, contentDescription = "Terminal", tint = neuColors.primaryAccent, modifier = Modifier.size(16.dp))
-                        }
-                        IconButton(onClick = onLockSession, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Lock, contentDescription = "Lock", tint = neuColors.textSecondary, modifier = Modifier.size(16.dp))
-                        }
-                        IconButton(onClick = onStopSession, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.PowerSettingsNew, contentDescription = "Exit", tint = neuColors.error, modifier = Modifier.size(16.dp))
-                        }
-                    }
+    var activeWindows by remember { mutableStateOf<List<DesktopWindow>>(emptyList()) }
+    var lastEscTimestamp by remember { mutableStateOf(0L) }
+
+    // Latched modifier button states
+    var isCtrlLatched by remember { mutableStateOf(false) }
+    var isAltLatched by remember { mutableStateOf(false) }
+    var isSuperLatched by remember { mutableStateOf(false) }
+    var isShiftLatched by remember { mutableStateOf(false) }
+
+    fun refreshActiveWindows() {
+        val raw = NativeBridge.getActiveWindows()
+        activeWindows = raw.mapNotNull { desc ->
+            val parts = desc.split(":", limit = 3)
+            if (parts.isNotEmpty()) {
+                val id = parts[0].toLongOrNull() ?: return@mapNotNull null
+                val appId = if (parts.size > 1) parts[1] else "App"
+                val title = if (parts.size > 2) parts[2] else appId
+                DesktopWindow(id, appId, title)
+            } else null
+        }
+    }
+
+    fun pasteFromClipboard() {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        val item = clipboard?.primaryClip?.getItemAt(0)
+        val text = item?.text?.toString()
+        if (!text.isNullOrEmpty()) {
+            surfaceViewRef?.pasteText(text)
+            Toast.makeText(context, "Pasted ${text.length} characters", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Fullscreen Insets controller
+    val insetsController = remember(activity) {
+        activity?.window?.let { win ->
+            WindowCompat.getInsetsController(win, win.decorView).apply {
+                systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        }
+    }
+
+    LaunchedEffect(isFullscreen) {
+        if (isFullscreen) {
+            insetsController?.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            insetsController?.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            insetsController?.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    // Deterministic BackHandler with 5-priority policy
+    BackHandler {
+        when {
+            // Priority 1: Dismiss any open mobile dialog / sheet
+            showExitDialog -> showExitDialog = false
+            showWindowSwitcher -> showWindowSwitcher = false
+            showScaleSelector -> showScaleSelector = false
+            showSessionMenu -> showSessionMenu = false
+
+            // Priority 2 & 3: Dispatch Escape key to active Linux window
+            else -> {
+                surfaceViewRef?.sendSingleKey(KeyEvent.KEYCODE_ESCAPE)
+                val now = System.currentTimeMillis()
+                if (lastEscTimestamp > 0L && now - lastEscTimestamp < 1500L) {
+                    showExitDialog = true
+                } else {
+                    Toast.makeText(context, "Sent ESC to Linux. Press Back again to exit.", Toast.LENGTH_SHORT).show()
+                    lastEscTimestamp = now
                 }
             }
         }
+    }
+
+    Scaffold(
+        containerColor = Color(0xFF1E222B),
     ) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color(0xFF1E222B))
-                .padding(padding),
-            contentAlignment = Alignment.Center,
+                .padding(if (isFullscreen) PaddingValues(0.dp) else padding),
         ) {
+            // 1. Presentation Surface
             AndroidView(
                 factory = { ctx ->
-                    GuiSurfaceView(ctx).also { surfaceViewRef = it }
+                    GuiSurfaceView(ctx).also {
+                        it.touchMode = touchMode
+                        surfaceViewRef = it
+                    }
+                },
+                update = { view ->
+                    view.touchMode = touchMode
                 },
                 modifier = Modifier.fillMaxSize()
             )
+
+            // 2. Session Reconnection / Status Banner
+            if (environment.state != EnvironmentState.RUNNING) {
+                Surface(
+                    color = Color(0xCC000000),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            color = neuColors.warning,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "Session state: ${environment.state}...",
+                            fontFamily = SfMono,
+                            fontSize = 11.sp,
+                            color = neuColors.warning
+                        )
+                    }
+                }
+            }
+
+            // 3. Mobile Desktop Toolbar Overlay
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+            ) {
+                if (!isFullscreen || isToolbarExpanded) {
+                    // Top Bar / Control Panel
+                    Surface(
+                        color = Color(0xE6161920),
+                        shadowElevation = 6.dp,
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .statusBarsPadding()
+                        ) {
+                            // Primary Control Row
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    DistroIcon(distribution = environment.distribution, size = 22.dp)
+                                    Text(
+                                        text = environment.name,
+                                        fontFamily = SfPro,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    // Touch Mode Toggle
+                                    Surface(
+                                        color = if (touchMode == GuiSurfaceView.TouchMode.DIRECT) neuColors.primaryAccent.copy(alpha = 0.2f) else neuColors.secondaryAccent.copy(alpha = 0.2f),
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.clickable {
+                                            touchMode = if (touchMode == GuiSurfaceView.TouchMode.DIRECT) {
+                                                GuiSurfaceView.TouchMode.TRACKPAD
+                                            } else {
+                                                GuiSurfaceView.TouchMode.DIRECT
+                                            }
+                                        }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = if (touchMode == GuiSurfaceView.TouchMode.DIRECT) Icons.Default.TouchApp else Icons.Default.Mouse,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(13.dp),
+                                                tint = if (touchMode == GuiSurfaceView.TouchMode.DIRECT) neuColors.primaryAccent else neuColors.secondaryAccent
+                                            )
+                                            Text(
+                                                text = if (touchMode == GuiSurfaceView.TouchMode.DIRECT) "Direct" else "Trackpad",
+                                                fontSize = 10.sp,
+                                                fontFamily = SfMono,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (touchMode == GuiSurfaceView.TouchMode.DIRECT) neuColors.primaryAccent else neuColors.secondaryAccent
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    // Soft Keyboard toggle
+                                    IconButton(
+                                        onClick = { surfaceViewRef?.toggleSoftKeyboard() },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.Keyboard, contentDescription = "Soft Keyboard", tint = neuColors.primaryAccent, modifier = Modifier.size(16.dp))
+                                    }
+                                    // Clipboard Paste
+                                    IconButton(
+                                        onClick = { pasteFromClipboard() },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.ContentPaste, contentDescription = "Paste", tint = neuColors.secondaryAccent, modifier = Modifier.size(16.dp))
+                                    }
+                                    // Tasks / Window Switcher
+                                    IconButton(
+                                        onClick = {
+                                            refreshActiveWindows()
+                                            showWindowSwitcher = true
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.Layers, contentDescription = "Tasks", tint = neuColors.textPrimary, modifier = Modifier.size(16.dp))
+                                    }
+                                    // Scale Selector
+                                    IconButton(
+                                        onClick = { showScaleSelector = true },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.AspectRatio, contentDescription = "Scale", tint = neuColors.textPrimary, modifier = Modifier.size(16.dp))
+                                    }
+                                    // Fullscreen toggle
+                                    IconButton(
+                                        onClick = {
+                                            isFullscreen = !isFullscreen
+                                            if (isFullscreen) isToolbarExpanded = false
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                            contentDescription = "Fullscreen",
+                                            tint = neuColors.textPrimary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                    // Session Menu
+                                    IconButton(
+                                        onClick = { showSessionMenu = true },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.MoreVert, contentDescription = "Menu", tint = neuColors.textPrimary, modifier = Modifier.size(16.dp))
+                                    }
+                                    // Collapse button if in fullscreen
+                                    if (isFullscreen) {
+                                        IconButton(
+                                            onClick = { isToolbarExpanded = false },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Collapse", tint = neuColors.textSecondary, modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Modifier Key Bar (Horizontally scrollable)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                ModifierPill(label = "ESC", isActive = false) {
+                                    surfaceViewRef?.sendSingleKey(KeyEvent.KEYCODE_ESCAPE)
+                                }
+                                ModifierPill(label = "TAB", isActive = false) {
+                                    surfaceViewRef?.sendSingleKey(KeyEvent.KEYCODE_TAB)
+                                }
+                                ModifierPill(label = "Ctrl", isActive = isCtrlLatched) {
+                                    isCtrlLatched = surfaceViewRef?.toggleModifier(KeyEvent.KEYCODE_CTRL_LEFT) ?: !isCtrlLatched
+                                }
+                                ModifierPill(label = "Alt", isActive = isAltLatched) {
+                                    isAltLatched = surfaceViewRef?.toggleModifier(KeyEvent.KEYCODE_ALT_LEFT) ?: !isAltLatched
+                                }
+                                ModifierPill(label = "Super", isActive = isSuperLatched) {
+                                    isSuperLatched = surfaceViewRef?.toggleModifier(KeyEvent.KEYCODE_META_LEFT) ?: !isSuperLatched
+                                }
+                                ModifierPill(label = "Shift", isActive = isShiftLatched) {
+                                    isShiftLatched = surfaceViewRef?.toggleModifier(KeyEvent.KEYCODE_SHIFT_LEFT) ?: !isShiftLatched
+                                }
+                                ModifierPill(label = "←", isActive = false) {
+                                    surfaceViewRef?.sendSingleKey(KeyEvent.KEYCODE_DPAD_LEFT)
+                                }
+                                ModifierPill(label = "↑", isActive = false) {
+                                    surfaceViewRef?.sendSingleKey(KeyEvent.KEYCODE_DPAD_UP)
+                                }
+                                ModifierPill(label = "↓", isActive = false) {
+                                    surfaceViewRef?.sendSingleKey(KeyEvent.KEYCODE_DPAD_DOWN)
+                                }
+                                ModifierPill(label = "→", isActive = false) {
+                                    surfaceViewRef?.sendSingleKey(KeyEvent.KEYCODE_DPAD_RIGHT)
+                                }
+                                ModifierPill(label = "Home", isActive = false) {
+                                    surfaceViewRef?.sendSingleKey(KeyEvent.KEYCODE_MOVE_HOME)
+                                }
+                                ModifierPill(label = "End", isActive = false) {
+                                    surfaceViewRef?.sendSingleKey(KeyEvent.KEYCODE_MOVE_END)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Floating Pill when Fullscreen and Toolbar collapsed
+            if (isFullscreen && !isToolbarExpanded) {
+                Surface(
+                    color = Color(0xCC161920),
+                    shape = RoundedCornerShape(16.dp),
+                    shadowElevation = 4.dp,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(top = 8.dp)
+                        .clickable { isToolbarExpanded = true }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        DistroIcon(distribution = environment.distribution, size = 16.dp)
+                        Text(
+                            text = if (touchMode == GuiSurfaceView.TouchMode.DIRECT) "Touch" else "Trackpad",
+                            fontFamily = SfMono,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = neuColors.primaryAccent
+                        )
+                        Icon(
+                            Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Expand Toolbar",
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+
+            // 4. Modals and Dialogs
+
+            // Task / Window Switcher Dialog
+            if (showWindowSwitcher) {
+                AlertDialog(
+                    onDismissRequest = { showWindowSwitcher = false },
+                    title = {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Active Linux Windows", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            IconButton(onClick = { showWindowSwitcher = false }, modifier = Modifier.size(24.dp)) {
+                                Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    },
+                    text = {
+                        if (activeWindows.isEmpty()) {
+                            Text("No graphical windows currently open.", color = neuColors.textSecondary, fontSize = 13.sp)
+                        } else {
+                            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(activeWindows) { win ->
+                                    Surface(
+                                        color = neuColors.surfacePressed,
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(10.dp)) {
+                                            Text(
+                                                text = win.title.ifEmpty { win.appId },
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                color = neuColors.textPrimary
+                                            )
+                                            Text(
+                                                text = "App: ${win.appId} • ID: ${win.id}",
+                                                fontSize = 11.sp,
+                                                fontFamily = SfMono,
+                                                color = neuColors.textSecondary
+                                            )
+                                            Spacer(Modifier.height(6.dp))
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Button(
+                                                    onClick = {
+                                                        NativeBridge.performWindowAction(win.id, "activate")
+                                                        showWindowSwitcher = false
+                                                    },
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                    modifier = Modifier.height(28.dp)
+                                                ) {
+                                                    Text("Focus", fontSize = 11.sp)
+                                                }
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        NativeBridge.performWindowAction(win.id, "maximize")
+                                                        showWindowSwitcher = false
+                                                    },
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                    modifier = Modifier.height(28.dp)
+                                                ) {
+                                                    Text("Maximize", fontSize = 11.sp)
+                                                }
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        NativeBridge.performWindowAction(win.id, "close")
+                                                        refreshActiveWindows()
+                                                    },
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = neuColors.error),
+                                                    modifier = Modifier.height(28.dp)
+                                                ) {
+                                                    Text("Close", fontSize = 11.sp)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showWindowSwitcher = false }) {
+                            Text("Done")
+                        }
+                    }
+                )
+            }
+
+            // Display Scale Dialog
+            if (showScaleSelector) {
+                AlertDialog(
+                    onDismissRequest = { showScaleSelector = false },
+                    title = { Text("Display Scaling", fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Scale factor for Weston and LDDE desktop:", fontSize = 13.sp, color = neuColors.textSecondary)
+                            listOf(
+                                1 to "100% (Native / Sharp)",
+                                2 to "200% (HiDPI / Touch Friendly)"
+                            ).forEach { (scale, label) ->
+                                Surface(
+                                    color = if (currentScale == scale) neuColors.primaryAccent.copy(alpha = 0.15f) else neuColors.surfacePressed,
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = if (currentScale == scale) androidx.compose.foundation.BorderStroke(1.dp, neuColors.primaryAccent) else null,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            currentScale = scale
+                                            NativeBridge.setOutputScale(scale)
+                                            showScaleSelector = false
+                                            Toast.makeText(context, "Scale set to $label", Toast.LENGTH_SHORT).show()
+                                        }
+                                ) {
+                                    Text(
+                                        text = label,
+                                        fontSize = 13.sp,
+                                        fontWeight = if (currentScale == scale) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (currentScale == scale) neuColors.primaryAccent else neuColors.textPrimary,
+                                        modifier = Modifier.padding(12.dp)
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showScaleSelector = false }) {
+                            Text("Close")
+                        }
+                    }
+                )
+            }
+
+            // Session Menu Dialog
+            if (showSessionMenu) {
+                AlertDialog(
+                    onDismissRequest = { showSessionMenu = false },
+                    title = { Text("Desktop Session Menu", fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Surface(
+                                color = neuColors.surfacePressed,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("Distribution: ${environment.distribution.displayName} (${environment.architecture.abiName})", fontSize = 12.sp, fontFamily = SfMono)
+                                    Text("State: ${environment.state}", fontSize = 12.sp, fontFamily = SfMono)
+                                    Text("Scaling: ${currentScale * 100}%", fontSize = 12.sp, fontFamily = SfMono)
+                                    Text("Input Mode: ${touchMode.name}", fontSize = 12.sp, fontFamily = SfMono)
+                                }
+                            }
+                            Button(
+                                onClick = {
+                                    showSessionMenu = false
+                                    onOpenTerminal()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Open Terminal CLI")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    showSessionMenu = false
+                                    onLockSession()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Lock Session")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    showSessionMenu = false
+                                    NativeBridge.guiStop()
+                                    NativeBridge.guiStart()
+                                    Toast.makeText(context, "GUI Compositor Restarted", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Restart Wayland Compositor")
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showSessionMenu = false
+                                showExitDialog = true
+                            },
+                            colors = ButtonDefaults.textButtonColors(contentColor = neuColors.error)
+                        ) {
+                            Text("Exit / Stop")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showSessionMenu = false }) {
+                            Text("Dismiss")
+                        }
+                    }
+                )
+            }
+
+            // Exit Confirmation Dialog (Back Policy Priority 4 / Session Stop)
+            if (showExitDialog) {
+                AlertDialog(
+                    onDismissRequest = { showExitDialog = false },
+                    title = { Text("Exit Desktop Session", fontWeight = FontWeight.Bold) },
+                    text = {
+                        Text(
+                            "Choose whether to leave the Linux environment running in the background or stop it completely.",
+                            fontSize = 13.sp,
+                            color = neuColors.textSecondary
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                showExitDialog = false
+                                onNavigateHome()
+                            }
+                        ) {
+                            Text("Run in Background")
+                        }
+                    },
+                    dismissButton = {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            TextButton(onClick = { showExitDialog = false }) {
+                                Text("Cancel")
+                            }
+                            TextButton(
+                                onClick = {
+                                    showExitDialog = false
+                                    onStopSession()
+                                },
+                                colors = ButtonDefaults.textButtonColors(contentColor = neuColors.error)
+                            ) {
+                                Text("Stop Session")
+                            }
+                        }
+                    }
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun ModifierPill(
+    label: String,
+    isActive: Boolean,
+    onClick: () -> Unit
+) {
+    val neuColors = NeuTheme.colors
+    Surface(
+        color = if (isActive) neuColors.primaryAccent else Color(0xFF2C3240),
+        shape = RoundedCornerShape(6.dp),
+        modifier = Modifier.clickable { onClick() }
+    ) {
+        Text(
+            text = label,
+            fontFamily = SfMono,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (isActive) Color.White else neuColors.textSecondary,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
     }
 }
 

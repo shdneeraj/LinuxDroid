@@ -229,6 +229,44 @@ object NativeBridge {
         }
     }
 
+    /**
+     * Sets the Wayland output scale factor (1, 2, 3, or 4).
+     */
+    fun setOutputScale(scale: Int) {
+        if (isLoaded) {
+            try {
+                nativeSetOutputScale(scale)
+            } catch (_: UnsatisfiedLinkError) {}
+        }
+    }
+
+    /**
+     * Gets the current Wayland output scale factor.
+     */
+    fun getOutputScale(): Int {
+        return if (isLoaded) {
+            try {
+                nativeGetOutputScale()
+            } catch (_: UnsatisfiedLinkError) {
+                1
+            }
+        } else {
+            1
+        }
+    }
+
+    /**
+     * Enqueues a window action ("activate", "minimize", "maximize", "restore", "close")
+     * for a tracked window ID.
+     */
+    fun performWindowAction(windowId: Long, action: String) {
+        if (isLoaded) {
+            try {
+                nativePerformWindowAction(windowId, action)
+            } catch (_: UnsatisfiedLinkError) {}
+        }
+    }
+
     // ─── External JNI declarations ─────────────────────────────────────────────────
 
     @JvmStatic external fun nativeGetBridgeVersion(): Int
@@ -280,4 +318,7 @@ object NativeBridge {
     )
     @JvmStatic external fun nativeSetAppLaunchListener(listener: Any?)
     @JvmStatic external fun nativeGetActiveWindows(): Array<String>
+    @JvmStatic external fun nativeSetOutputScale(scale: Int)
+    @JvmStatic external fun nativeGetOutputScale(): Int
+    @JvmStatic external fun nativePerformWindowAction(windowId: Long, action: String)
 }

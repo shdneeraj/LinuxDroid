@@ -649,5 +649,30 @@ Java_com_linuxdroid_native_1bridge_NativeBridge_nativeGetActiveWindows(
     return result;
 }
 
+JNIEXPORT void JNICALL
+Java_com_linuxdroid_native_1bridge_NativeBridge_nativeSetOutputScale(
+    JNIEnv* env, [[maybe_unused]] jclass clazz, jint scale) {
+    (void)env;
+    linuxdroid::gui::GuiHost::getInstance().setOutputScale(static_cast<int32_t>(scale));
+}
+
+JNIEXPORT jint JNICALL
+Java_com_linuxdroid_native_1bridge_NativeBridge_nativeGetOutputScale(
+    JNIEnv* env, [[maybe_unused]] jclass clazz) {
+    (void)env;
+    return static_cast<jint>(linuxdroid::gui::GuiHost::getInstance().getOutputScale());
+}
+
+JNIEXPORT void JNICALL
+Java_com_linuxdroid_native_1bridge_NativeBridge_nativePerformWindowAction(
+    JNIEnv* env, [[maybe_unused]] jclass clazz, jlong windowId, jstring jaction) {
+    if (!jaction) return;
+    const char* actionStr = env->GetStringUTFChars(jaction, nullptr);
+    if (!actionStr) return;
+    std::string action(actionStr);
+    env->ReleaseStringUTFChars(jaction, actionStr);
+    linuxdroid::gui::GuiHost::getInstance().enqueueWindowAction(static_cast<uint64_t>(windowId), action);
+}
+
 } // extern "C"
 
