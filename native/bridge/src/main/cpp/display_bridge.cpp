@@ -45,22 +45,24 @@ void DisplayBridge::onSurfaceCreated(JNIEnv* env, jobject surface, int width, in
 
 void DisplayBridge::onSurfaceChanged(JNIEnv* env, jobject surface, int width, int height, int format) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (window_ != nullptr) {
-        linuxdroid::gui::GuiHost::getInstance().destroyNativeWindow();
-        ANativeWindow_release(window_);
-        window_ = nullptr;
+    if (surface == nullptr) {
+        onSurfaceDestroyed();
+        return;
     }
 
-    if (surface != nullptr) {
+    if (window_ == nullptr) {
         window_ = ANativeWindow_fromSurface(env, surface);
-        if (window_ != nullptr) {
-            width_ = width;
-            height_ = height;
-            format_ = (format != 0) ? format : WINDOW_FORMAT_RGBA_8888;
-            ANativeWindow_setBuffersGeometry(window_, width_, height_, format_);
-            LOGI("ANativeWindow changed: %dx%d, format=%d", width_, height_, format_);
-            linuxdroid::gui::GuiHost::getInstance().changeNativeWindow(window_, width_, height_, format_);
-        }
+    }
+
+    if (window_ != nullptr) {
+        width_ = width;
+        height_ = height;
+        format_ = (format != 0) ? format : WINDOW_FORMAT_RGBA_8888;
+        ANativeWindow_setBuffersGeometry(window_, width_, height_, format_);
+        LOGI("ANativeWindow changed: %dx%d, format=%d", width_, height_, format_);
+        linuxdroid::gui::GuiHost::getInstance().changeNativeWindow(window_, width_, height_, format_);
+    } else {
+        LOGE("ANativeWindow_fromSurface failed in onSurfaceChanged");
     }
 }
 

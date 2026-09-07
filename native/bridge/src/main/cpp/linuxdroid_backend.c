@@ -288,35 +288,37 @@ linuxdroid_output_enable_pixman(struct weston_output *base)
             LOGE("ANDROID_PRESENTATION_ERROR: failed to enable Android presentation surface: %d", err);
             return -1; // If SurfaceControl creation fails, output enable must fail
         }
+
+        // 2. Initialize Pixman output renderer state
+        const struct pixel_format_info *pfmt = pixel_format_get_info(DRM_FORMAT_ABGR8888);
+        if (!pfmt) {
+            LOGE("PIXMAN_RENDERER_ERROR: PIXMAN_FORMAT_FAILURE - failed to get pixel format DRM_FORMAT_ABGR8888");
+            return -1;
+        }
+
+        struct pixman_renderer_output_options options = {
+            .use_shadow = false,
+            .fb_size = {
+                .width = output->base.current_mode ? output->base.current_mode->width : output->width,
+                .height = output->base.current_mode ? output->base.current_mode->height : output->height,
+            },
+            .format = pfmt,
+        };
+
+        if (renderer->pixman->output_create(base, &options) < 0) {
+            LOGE("PIXMAN_RENDERER_ERROR: PIXMAN_INIT_FAILURE - renderer->pixman->output_create failed");
+            return -1;
+        }
+        output->pixman_initialized = true;
+
+        // 3. Create deterministic test scene for first visible frame validation
+        linuxdroid_output_create_test_scene(base);
+
+        // 4. Schedule initial repaint so first frame is immediately rendered and presented
+        weston_output_schedule_repaint(base);
+    } else {
+        LOGI("PIXMAN_RENDERER_PENDING: native window not yet attached; output enabled in pending presentation state");
     }
-
-    // 2. Initialize Pixman output renderer state
-    const struct pixel_format_info *pfmt = pixel_format_get_info(DRM_FORMAT_ABGR8888);
-    if (!pfmt) {
-        LOGE("PIXMAN_RENDERER_ERROR: PIXMAN_FORMAT_FAILURE - failed to get pixel format DRM_FORMAT_ABGR8888");
-        return -1;
-    }
-
-    struct pixman_renderer_output_options options = {
-        .use_shadow = false,
-        .fb_size = {
-            .width = output->base.current_mode ? output->base.current_mode->width : output->width,
-            .height = output->base.current_mode ? output->base.current_mode->height : output->height,
-        },
-        .format = pfmt,
-    };
-
-    if (renderer->pixman->output_create(base, &options) < 0) {
-        LOGE("PIXMAN_RENDERER_ERROR: PIXMAN_INIT_FAILURE - renderer->pixman->output_create failed");
-        return -1;
-    }
-    output->pixman_initialized = true;
-
-    // 3. Create deterministic test scene for first visible frame validation
-    linuxdroid_output_create_test_scene(base);
-
-    // 4. Schedule initial repaint so first frame is immediately rendered and presented
-    weston_output_schedule_repaint(base);
 
     LOGI("LINUXDROID_OUTPUT_ENABLED: output '%s' enabled (%dx%d) with Pixman software renderer",
          base->name ? base->name : "(unnamed)", output->width, output->height);
@@ -374,61 +376,63 @@ linuxdroid_output_enable_gles(struct weston_output *base)
             LOGE("ANDROID_PRESENTATION_ERROR: failed to enable Android presentation surface: %d", err);
             return -1;
         }
-    }
 
-    // 2. Initialize GLES EGLImage and FBO targets in presentation pool using active EGLDisplay
-    void *egl_display = linuxdroid_backend_get_egl_display(base);
-    int err = android_presentation_init_gles_targets(output->presentation, egl_display);
-    if (err < 0) {
-        LOGE("GLES_RENDERER_ERROR: GLES_FBO_ATTACH_FAILURE - failed to init presentation GLES targets: %d", err);
-        return -1;
-    }
-
-    // 3. Create FBO-based Weston output
-    struct gl_renderer_fbo_options options = {
-        .fb_size = {
-            .width = output->base.current_mode ? output->base.current_mode->width : output->width,
-            .height = output->base.current_mode ? output->base.current_mode->height : output->height,
-        },
-        .area = {
-            .x = 0,
-            .y = 0,
-            .width = output->base.current_mode ? output->base.current_mode->width : output->width,
-            .height = output->base.current_mode ? output->base.current_mode->height : output->height,
-        },
-    };
-
-    if (renderer->gl->output_fbo_create(base, &options) < 0) {
-        LOGE("GLES_RENDERER_ERROR: GLES_OUTPUT_CREATE_FAILURE - renderer->gl->output_fbo_create failed");
-        return -1;
-    }
-
-    // 4. Initialize renderbuffers wrapping each slot FBO
-    for (int i = 0; i < 3; ++i) {
-        uint32_t fbo = android_presentation_get_fbo(output->presentation, i);
-        struct linuxdroid_gl_renderbuffer *rb = (struct linuxdroid_gl_renderbuffer *)calloc(1, sizeof(*rb));
-        if (!rb) {
-            LOGE("GLES_RENDERER_ERROR: failed to allocate gl_renderbuffer for slot %d", i);
+        // 2. Initialize GLES EGLImage and FBO targets in presentation pool using active EGLDisplay
+        void *egl_display = linuxdroid_backend_get_egl_display(base);
+        err = android_presentation_init_gles_targets(output->presentation, egl_display);
+        if (err < 0) {
+            LOGE("GLES_RENDERER_ERROR: GLES_FBO_ATTACH_FAILURE - failed to init presentation GLES targets: %d", err);
             return -1;
         }
-        rb->output = base;
-        rb->type = 0; // RENDERBUFFER_WINDOW
-        pixman_region32_init(&rb->damage);
-        pixman_region32_copy(&rb->damage, &base->region);
-        rb->border_status = 15; // BORDER_ALL_DIRTY
-        rb->fb = fbo;
-        rb->link.prev = &rb->link;
-        rb->link.next = &rb->link;
-        output->gles_renderbuffers[i] = (weston_renderbuffer_t)rb;
+
+        // 3. Create FBO-based Weston output
+        struct gl_renderer_fbo_options options = {
+            .fb_size = {
+                .width = output->base.current_mode ? output->base.current_mode->width : output->width,
+                .height = output->base.current_mode ? output->base.current_mode->height : output->height,
+            },
+            .area = {
+                .x = 0,
+                .y = 0,
+                .width = output->base.current_mode ? output->base.current_mode->width : output->width,
+                .height = output->base.current_mode ? output->base.current_mode->height : output->height,
+            },
+        };
+
+        if (renderer->gl->output_fbo_create(base, &options) < 0) {
+            LOGE("GLES_RENDERER_ERROR: GLES_OUTPUT_CREATE_FAILURE - renderer->gl->output_fbo_create failed");
+            return -1;
+        }
+
+        // 4. Initialize renderbuffers wrapping each slot FBO
+        for (int i = 0; i < 3; ++i) {
+            uint32_t fbo = android_presentation_get_fbo(output->presentation, i);
+            struct linuxdroid_gl_renderbuffer *rb = (struct linuxdroid_gl_renderbuffer *)calloc(1, sizeof(*rb));
+            if (!rb) {
+                LOGE("GLES_RENDERER_ERROR: failed to allocate gl_renderbuffer for slot %d", i);
+                return -1;
+            }
+            rb->output = base;
+            rb->type = 0; // RENDERBUFFER_WINDOW
+            pixman_region32_init(&rb->damage);
+            pixman_region32_copy(&rb->damage, &base->region);
+            rb->border_status = 15; // BORDER_ALL_DIRTY
+            rb->fb = fbo;
+            rb->link.prev = &rb->link;
+            rb->link.next = &rb->link;
+            output->gles_renderbuffers[i] = (weston_renderbuffer_t)rb;
+        }
+
+        output->gles_initialized = true;
+
+        // 5. Create deterministic test scene
+        linuxdroid_output_create_test_scene(base);
+
+        // 6. Schedule initial repaint
+        weston_output_schedule_repaint(base);
+    } else {
+        LOGI("GLES_RENDERER_PENDING: native window not yet attached; output enabled in pending presentation state");
     }
-
-    output->gles_initialized = true;
-
-    // 5. Create deterministic test scene
-    linuxdroid_output_create_test_scene(base);
-
-    // 6. Schedule initial repaint
-    weston_output_schedule_repaint(base);
 
     LOGI("LINUXDROID_OUTPUT_ENABLED: output '%s' enabled (%dx%d) with GLES hardware renderer",
          base->name ? base->name : "(unnamed)", output->width, output->height);
@@ -791,7 +795,74 @@ linuxdroid_output_set_window(struct weston_output *base, struct ANativeWindow *w
 
     output->native_window = window;
     if (output->presentation) {
-        android_presentation_set_window(output->presentation, window);
+        if (!android_presentation_is_enabled(output->presentation) && window != NULL) {
+            int err = android_presentation_enable(output->presentation,
+                                                  window,
+                                                  output->width,
+                                                  output->height);
+            if (err == 0 && output->backend && output->backend->renderer_type == LINUXDROID_RENDERER_GLES) {
+                void *egl_display = linuxdroid_backend_get_egl_display(base);
+                android_presentation_init_gles_targets(output->presentation, egl_display);
+                if (!output->gles_initialized && base->compositor && base->compositor->renderer && base->compositor->renderer->gl) {
+                    struct weston_renderer *renderer = base->compositor->renderer;
+                    struct gl_renderer_fbo_options options = {
+                        .fb_size = {
+                            .width = output->base.current_mode ? output->base.current_mode->width : output->width,
+                            .height = output->base.current_mode ? output->base.current_mode->height : output->height,
+                        },
+                        .area = {
+                            .x = 0,
+                            .y = 0,
+                            .width = output->base.current_mode ? output->base.current_mode->width : output->width,
+                            .height = output->base.current_mode ? output->base.current_mode->height : output->height,
+                        },
+                    };
+                    renderer->gl->output_fbo_create(base, &options);
+                    for (int i = 0; i < 3; ++i) {
+                        uint32_t fbo = android_presentation_get_fbo(output->presentation, i);
+                        struct linuxdroid_gl_renderbuffer *rb = (struct linuxdroid_gl_renderbuffer *)calloc(1, sizeof(*rb));
+                        if (rb) {
+                            rb->output = base;
+                            rb->type = 0;
+                            pixman_region32_init(&rb->damage);
+                            pixman_region32_copy(&rb->damage, &base->region);
+                            rb->border_status = 15;
+                            rb->fb = fbo;
+                            rb->link.prev = &rb->link;
+                            rb->link.next = &rb->link;
+                            output->gles_renderbuffers[i] = (weston_renderbuffer_t)rb;
+                        }
+                    }
+                    output->gles_initialized = true;
+                    linuxdroid_output_create_test_scene(base);
+                }
+            } else if (err == 0 && output->backend && output->backend->renderer_type == LINUXDROID_RENDERER_PIXMAN) {
+                if (!output->pixman_initialized && base->compositor && base->compositor->renderer && base->compositor->renderer->pixman) {
+                    struct weston_renderer *renderer = base->compositor->renderer;
+                    const struct pixel_format_info *pfmt = pixel_format_get_info(DRM_FORMAT_ABGR8888);
+                    if (pfmt) {
+                        struct pixman_renderer_output_options options = {
+                            .use_shadow = false,
+                            .fb_size = {
+                                .width = output->base.current_mode ? output->base.current_mode->width : output->width,
+                                .height = output->base.current_mode ? output->base.current_mode->height : output->height,
+                            },
+                            .format = pfmt,
+                        };
+                        if (renderer->pixman->output_create(base, &options) == 0) {
+                            output->pixman_initialized = true;
+                            linuxdroid_output_create_test_scene(base);
+                        }
+                    }
+                }
+            }
+        } else {
+            android_presentation_set_window(output->presentation, window);
+        }
+    }
+
+    if (window != NULL) {
+        weston_output_schedule_repaint(base);
     }
 }
 
