@@ -106,6 +106,7 @@ class RootfsValidator(
         distribution: Distribution,
         architecture: Architecture = Architecture.ARM64,
         requireGraphicalStack: Boolean = false,
+        username: String? = null,
     ): RootfsValidationReport {
         val checks = mutableListOf<ValidationCheckResult>()
         val errors = mutableListOf<String>()
@@ -346,6 +347,38 @@ class RootfsValidator(
             }
         }
 
+        // 7. User Account Validation (if specified)
+        if (username != null && username.isNotBlank()) {
+            val passwdFile = File(rootfsDir, "etc/passwd")
+            val homeDirectory = File(rootfsDir, "home/$username")
+            val sudoersFile = File(rootfsDir, "etc/sudoers.d/01linuxdroid-$username")
+
+            val userInPasswd = passwdFile.exists() && passwdFile.readLines().any { it.startsWith("$username:") }
+            if (!userInPasswd) {
+                val msg = "Configured user '$username' not found in /etc/passwd"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("user_account", false, msg))
+            } else {
+                checks.add(ValidationCheckResult("user_account", true, "User '$username' registered in /etc/passwd"))
+            }
+
+            if (!homeDirectory.exists()) {
+                val msg = "User home directory missing: /home/$username"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("user_home", false, msg))
+            } else {
+                checks.add(ValidationCheckResult("user_home", true, "Home directory present at /home/$username"))
+            }
+
+            if (!sudoersFile.exists()) {
+                val msg = "Sudo configuration missing: /etc/sudoers.d/01linuxdroid-$username"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("user_sudo", false, msg))
+            } else {
+                checks.add(ValidationCheckResult("user_sudo", true, "Sudo access configured for '$username'"))
+            }
+        }
+
         val isValid = errors.isEmpty()
         if (isValid) {
             log.info("[BOOTSTRAP_VALIDATE] Rootfs validation PASSED for ${distribution.displayName} (graphicalStack=$requireGraphicalStack)")
@@ -359,6 +392,80 @@ class RootfsValidator(
             architecture = architecture,
             checks = checks,
             errors = errors,
+        )
+    }
+
+    /**
+     * Stage A — Extraction Validation:
+     * Validates structural filesystem integrity immediately after rootfs archive extraction.
+     * Does NOT require graphical packages or runtime services.
+     */
+    fun validateExtraction(
+        rootfsDir: File,
+        distribution: Distribution,
+        architecture: Architecture = Architecture.ARM64,
+    ): RootfsValidationReport {
+        log.info("[STAGE_A] Executing Extraction Validation for ${distribution.displayName}")
+        return validate(
+            rootfsDir = rootfsDir,
+            distribution = distribution,
+            architecture = architecture,
+            requireGraphicalStack = false,
+            username = null,
+        )
+    }
+
+    /**
+     * Stage B — Runtime Validation:
+     * Validates persistent guest init and runtime infrastructure files.
+     */
+    fun validateRuntime(rootfsDir: File): Boolean {
+        log.info("[STAGE_B] Executing Runtime Infrastructure Validation")
+        val guestInit = resolveGuestSymlink(rootfsDir, "/sbin/linuxdroid-init")
+        val initValid = guestInit != null && guestInit.exists() && guestInit.canExecute()
+        val tmpValid = File(rootfsDir, "tmp").exists()
+        val runValid = File(rootfsDir, "run").exists()
+        return initValid && tmpValid && runValid
+    }
+
+    /**
+     * Stage C — Graphics Deployment Validation:
+     * Validates that Wayland runtime libraries, Weston compositor executable and backend,
+     * LDDM, and LDDE files exist on disk.
+     * Does NOT require Weston, LDDM, or LDDE processes to be actively running.
+     */
+    fun validateGraphics(
+        rootfsDir: File,
+        distribution: Distribution,
+        architecture: Architecture = Architecture.ARM64,
+    ): RootfsValidationReport {
+        log.info("[STAGE_C] Executing Graphics Deployment Validation (files only, no live GUI required)")
+        return validate(
+            rootfsDir = rootfsDir,
+            distribution = distribution,
+            architecture = architecture,
+            requireGraphicalStack = true,
+            username = null,
+        )
+    }
+
+    /**
+     * Stage D — Final Rootfs Validation:
+     * Comprehensive validation of complete installed baseline, user account, shell, sudo, and APT/dpkg integrity.
+     */
+    fun validateFinal(
+        rootfsDir: File,
+        distribution: Distribution,
+        architecture: Architecture = Architecture.ARM64,
+        username: String? = null,
+    ): RootfsValidationReport {
+        log.info("[STAGE_D] Executing Final Rootfs Validation (all components, user=$username)")
+        return validate(
+            rootfsDir = rootfsDir,
+            distribution = distribution,
+            architecture = architecture,
+            requireGraphicalStack = true,
+            username = username,
         )
     }
 }

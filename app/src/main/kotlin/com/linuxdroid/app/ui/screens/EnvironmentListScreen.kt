@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -26,15 +27,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import com.linuxdroid.app.ui.navigation.Screen
 import com.linuxdroid.app.ui.viewmodel.EnvironmentViewModel
 import com.linuxdroid.app.ui.theme.*
-import com.linuxdroid.core.model.Architecture
-import com.linuxdroid.core.model.Distribution
-import com.linuxdroid.core.model.Environment
-import com.linuxdroid.core.model.EnvironmentConfiguration
-import com.linuxdroid.core.model.EnvironmentState
-import com.linuxdroid.core.model.UsernameValidator
+import com.linuxdroid.core.model.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -156,8 +154,8 @@ fun EnvironmentListScreen(
     if (showCreateDialog) {
         CreateEnvironmentDialog(
             onDismiss = { showCreateDialog = false },
-            onCreate = { name, dist, arch ->
-                viewModel.createEnvironment(name, dist, arch, autoBootstrap = true)
+            onCreateWithConfig = { config, name ->
+                viewModel.createEnvironmentWithConfig(config, name)
                 showCreateDialog = false
             }
         )
@@ -581,12 +579,32 @@ private fun StateChip(state: EnvironmentState) {
 @Composable
 private fun CreateEnvironmentDialog(
     onDismiss: () -> Unit,
-    onCreate: (name: String, distribution: Distribution, architecture: Architecture) -> Unit,
+    onCreateWithConfig: (InstallConfig, String) -> Unit,
 ) {
-    var name by remember { mutableStateOf("Debian Linux") }
     var selectedDist by remember { mutableStateOf(Distribution.DEBIAN) }
     val detectedArch = remember { Architecture.current() }
-    var selectedArch by remember { mutableStateOf(detectedArch) }
+    val availableReleases = remember(selectedDist) {
+        DistributionCatalog.getAvailableReleases(selectedDist)
+    }
+    var selectedRelease by remember(selectedDist) {
+        mutableStateOf(
+            availableReleases.firstOrNull { it.isDefault }?.releaseCode
+                ?: availableReleases.firstOrNull()?.releaseCode
+                ?: "bookworm"
+        )
+    }
+
+    var name by remember { mutableStateOf("Debian Linux") }
+    var username by remember { mutableStateOf("user") }
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var confirmPasswordVisible by remember { mutableStateOf(false) }
+
+    val usernameResult = remember(username) { UsernameValidator.validate(username) }
+    val passwordResult = remember(password, confirmPassword) { PasswordValidator.validate(password, confirmPassword) }
+    val isFormValid = usernameResult == null && passwordResult == null && username.isNotBlank() && password.isNotBlank() && name.isNotBlank()
+
     val neuColors = NeuTheme.colors
 
     AlertDialog(
@@ -595,8 +613,10 @@ private fun CreateEnvironmentDialog(
         title = { Text("New Linux Environment", color = neuColors.textPrimary, fontWeight = FontWeight.Bold) },
         text = {
             Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 OutlinedTextField(
                     value = name,
@@ -613,9 +633,10 @@ private fun CreateEnvironmentDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
+                // Distribution Selection
                 Column {
                     Text("Distribution", style = MaterialTheme.typography.labelMedium, color = neuColors.textSecondary)
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(4.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -624,8 +645,12 @@ private fun CreateEnvironmentDialog(
                             val isSelected = selectedDist == dist
                             NeuButton(
                                 onClick = {
-                                    selectedDist = dist
-                                    if (name.isBlank() || name == "Debian Linux" || name == "Ubuntu Linux") {
+                                    if (selectedDist != dist) {
+                                        selectedDist = dist
+                                        val releases = DistributionCatalog.getAvailableReleases(dist)
+                                        selectedRelease = releases.firstOrNull { it.isDefault }?.releaseCode
+                                            ?: releases.firstOrNull()?.releaseCode
+                                            ?: "bookworm"
                                         name = "${dist.displayName} Linux"
                                     }
                                 },
@@ -640,33 +665,131 @@ private fun CreateEnvironmentDialog(
                     }
                 }
 
+                // Release Version Selection
                 Column {
-                    Text("Architecture", style = MaterialTheme.typography.labelMedium, color = neuColors.textSecondary)
-                    Spacer(Modifier.height(6.dp))
+                    Text("Release Version", style = MaterialTheme.typography.labelMedium, color = neuColors.textSecondary)
+                    Spacer(Modifier.height(4.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        listOf(Architecture.ARM64).forEach { arch ->
-                            val isSelected = selectedArch == arch
+                        availableReleases.forEach { rel ->
+                            val isSelected = selectedRelease == rel.releaseCode
                             NeuButton(
-                                onClick = { selectedArch = arch },
+                                onClick = { selectedRelease = rel.releaseCode },
                                 isAccent = isSelected,
                                 elevation = if (isSelected) 2.dp else 4.dp,
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                shape = RoundedCornerShape(10.dp)
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp),
+                                shape = RoundedCornerShape(8.dp),
                             ) {
-                                Text(arch.abiName, fontSize = 12.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                Text(rel.displayName, fontSize = 11.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
                             }
                         }
                     }
                 }
+
+                // Architecture (Auto detected)
+                Surface(
+                    color = neuColors.surfacePressed,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text("Target Architecture", fontSize = 11.sp, color = neuColors.textSecondary)
+                        Text("${detectedArch.linuxArch.uppercase()} (Detected)", fontSize = 11.sp, fontFamily = SfMono, fontWeight = FontWeight.Bold, color = neuColors.primaryAccent)
+                    }
+                }
+
+                // Linux Username
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it.trim().lowercase() },
+                    label = { Text("Linux Username") },
+                    singleLine = true,
+                    isError = usernameResult != null && username.isNotEmpty(),
+                    supportingText = {
+                        if (usernameResult != null && username.isNotEmpty()) {
+                            Text(usernameResult, color = neuColors.error, fontSize = 10.sp)
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = neuColors.textPrimary,
+                        unfocusedTextColor = neuColors.textPrimary,
+                        focusedBorderColor = neuColors.primaryAccent,
+                        unfocusedBorderColor = neuColors.borderHighlight,
+                        focusedLabelColor = neuColors.primaryAccent,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                // Password
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Password") },
+                    singleLine = true,
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff, contentDescription = null, tint = neuColors.textSecondary)
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = neuColors.textPrimary,
+                        unfocusedTextColor = neuColors.textPrimary,
+                        focusedBorderColor = neuColors.primaryAccent,
+                        unfocusedBorderColor = neuColors.borderHighlight,
+                        focusedLabelColor = neuColors.primaryAccent,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                // Confirm Password
+                OutlinedTextField(
+                    value = confirmPassword,
+                    onValueChange = { confirmPassword = it },
+                    label = { Text("Confirm Password") },
+                    singleLine = true,
+                    visualTransformation = if (confirmPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { confirmPasswordVisible = !confirmPasswordVisible }) {
+                            Icon(if (confirmPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff, contentDescription = null, tint = neuColors.textSecondary)
+                        }
+                    },
+                    isError = passwordResult != null && (password.isNotEmpty() || confirmPassword.isNotEmpty()),
+                    supportingText = {
+                        if (passwordResult != null && (password.isNotEmpty() || confirmPassword.isNotEmpty())) {
+                            Text(passwordResult, color = neuColors.error, fontSize = 10.sp)
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = neuColors.textPrimary,
+                        unfocusedTextColor = neuColors.textPrimary,
+                        focusedBorderColor = neuColors.primaryAccent,
+                        unfocusedBorderColor = neuColors.borderHighlight,
+                        focusedLabelColor = neuColors.primaryAccent,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         },
         confirmButton = {
             NeuButton(
-                onClick = { onCreate(name, selectedDist, selectedArch) },
-                enabled = name.isNotBlank(),
+                onClick = {
+                    val config = InstallConfig(
+                        distro = selectedDist,
+                        release = selectedRelease,
+                        username = username.trim(),
+                        password = password,
+                        architecture = detectedArch,
+                    )
+                    onCreateWithConfig(config, name)
+                },
+                enabled = isFormValid,
                 isAccent = true,
                 shape = RoundedCornerShape(10.dp),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)

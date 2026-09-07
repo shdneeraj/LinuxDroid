@@ -57,6 +57,16 @@ data class DistributionDefinition(
 )
 
 /**
+ * Metadata describing a specific release version of a distribution.
+ */
+@Serializable
+data class DistroRelease(
+    val releaseCode: String,
+    val displayName: String,
+    val isDefault: Boolean = false,
+)
+
+/**
  * Built-in distribution catalog containing official distribution sources.
  */
 object DistributionCatalog {
@@ -66,34 +76,54 @@ object DistributionCatalog {
         getDefinition(Distribution.UBUNTU, Architecture.ARM64),
     )
 
-    fun getDefinition(distribution: Distribution, architecture: Architecture = Architecture.ARM64): DistributionDefinition {
+    fun getAvailableReleases(distribution: Distribution): List<DistroRelease> {
+        return when (distribution) {
+            Distribution.DEBIAN -> listOf(
+                DistroRelease("trixie", "Debian 13 (Trixie)", isDefault = true),
+                DistroRelease("bookworm", "Debian 12 (Bookworm)", isDefault = false),
+            )
+            Distribution.UBUNTU -> listOf(
+                DistroRelease("noble", "Ubuntu 24.04 LTS (Noble)", isDefault = true),
+                DistroRelease("jammy", "Ubuntu 22.04 LTS (Jammy)", isDefault = false),
+            )
+            else -> listOf(DistroRelease("default", "Default", isDefault = true))
+        }
+    }
+
+    fun getDefinition(
+        distribution: Distribution,
+        architecture: Architecture = Architecture.ARM64,
+        release: String? = null,
+    ): DistributionDefinition {
         val archSuffix = "arm64"
 
         return when (distribution) {
             Distribution.DEBIAN -> {
+                val targetRelease = release?.lowercase()?.trim()?.ifEmpty { null } ?: "bookworm"
+                val releaseName = if (targetRelease == "trixie") "Debian 13 (Trixie)" else "Debian 12 (Bookworm)"
                 DistributionDefinition(
-                    id = "debian-latest-$archSuffix",
-                    name = "Debian (Latest)",
+                    id = "debian-$targetRelease-$archSuffix",
+                    name = "$releaseName (${architecture.linuxArch} Minimal)",
                     distribution = Distribution.DEBIAN,
                     architecture = architecture,
-                    release = "bookworm",
+                    release = targetRelease,
                     variant = "default",
                     source = DistributionSource(
-                        url = "https://images.linuxcontainers.org/images/debian/bookworm/arm64/default/20260904_05:24/rootfs.tar.xz",
-                        checksumUrl = "https://images.linuxcontainers.org/images/debian/bookworm/arm64/default/20260904_05:24/SHA256SUMS",
+                        url = "https://images.linuxcontainers.org/images/debian/$targetRelease/arm64/default/20260904_05:24/rootfs.tar.xz",
+                        checksumUrl = "https://images.linuxcontainers.org/images/debian/$targetRelease/arm64/default/20260904_05:24/SHA256SUMS",
                         expectedChecksum = "37617e44b118183b2d47c78b24b523ce7c84729154c21ff075be21b3ec4339f0",
                         checksumAlgorithm = "SHA-256",
                         format = ArchiveFormat.TAR_XZ,
                         stripComponents = 0,
                     ),
                     aptSources = """
-                        deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
-                        deb http://deb.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
-                        deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
+                        deb http://deb.debian.org/debian $targetRelease main contrib non-free non-free-firmware
+                        deb http://deb.debian.org/debian-security $targetRelease-security main contrib non-free non-free-firmware
+                        deb http://deb.debian.org/debian $targetRelease-updates main contrib non-free non-free-firmware
                     """.trimIndent() + "\n",
                     manifest = DistributionManifest(
-                        version = "latest",
-                        release = "bookworm",
+                        version = targetRelease,
+                        release = targetRelease,
                         variant = "default",
                         defaultShell = "/bin/bash",
                     ),
@@ -101,28 +131,41 @@ object DistributionCatalog {
             }
 
             Distribution.UBUNTU -> {
+                val targetRelease = release?.lowercase()?.trim()?.ifEmpty { null } ?: "noble"
+                val releaseVersion = if (targetRelease == "jammy") "22.04" else "24.04"
+                val releaseDisplayName = if (targetRelease == "jammy") "Ubuntu 22.04 LTS Jammy" else "Ubuntu 24.04 LTS Noble"
+                val tarballUrl = if (targetRelease == "jammy") {
+                    "https://cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.4-base-arm64.tar.gz"
+                } else {
+                    "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-arm64.tar.gz"
+                }
+                val checksum = if (targetRelease == "jammy") {
+                    "e8c46565538e12a4f488667a7fa38a0f5f654b79b6d85ebbe6b69b6574fcfdfa"
+                } else {
+                    "04207713ece899c3740823d33690441ad3a7f0ded1101aca744e2b0f37ac7ff2"
+                }
                 DistributionDefinition(
-                    id = "ubuntu-noble-$archSuffix",
-                    name = "Ubuntu 24.04 LTS Noble (${architecture.linuxArch} Minimal)",
+                    id = "ubuntu-$targetRelease-$archSuffix",
+                    name = "$releaseDisplayName (${architecture.linuxArch} Minimal)",
                     distribution = Distribution.UBUNTU,
                     architecture = architecture,
-                    release = "noble",
+                    release = targetRelease,
                     variant = "minimal",
                     source = DistributionSource(
-                        url = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-arm64.tar.gz",
-                        expectedChecksum = "04207713ece899c3740823d33690441ad3a7f0ded1101aca744e2b0f37ac7ff2",
+                        url = tarballUrl,
+                        expectedChecksum = checksum,
                         checksumAlgorithm = "SHA-256",
                         format = ArchiveFormat.TAR_GZ,
                         stripComponents = 0,
                     ),
                     aptSources = """
-                        deb http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
-                        deb http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
-                        deb http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
+                        deb http://ports.ubuntu.com/ubuntu-ports $targetRelease main restricted universe multiverse
+                        deb http://ports.ubuntu.com/ubuntu-ports $targetRelease-updates main restricted universe multiverse
+                        deb http://ports.ubuntu.com/ubuntu-ports $targetRelease-security main restricted universe multiverse
                     """.trimIndent() + "\n",
                     manifest = DistributionManifest(
-                        version = "24.04.4",
-                        release = "noble",
+                        version = releaseVersion,
+                        release = targetRelease,
                         variant = "minimal",
                         defaultShell = "/bin/bash",
                     ),

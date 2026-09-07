@@ -78,15 +78,20 @@ class RootfsConfigurator(
         )
 
         // 4. Distribution APT Sources Configuration
-        if (definition.aptSources.isNotBlank()) {
-            val sourcesFile = File(rootfsDir, "etc/apt/sources.list")
+        // Existing APT configuration provided by the rootfs MUST be preserved.
+        // Only write fallback sources if etc/apt/sources.list does not exist or is empty,
+        // and etc/apt/sources.list.d/ contains no source files.
+        val sourcesFile = File(rootfsDir, "etc/apt/sources.list")
+        val sourcesDir = File(rootfsDir, "etc/apt/sources.list.d")
+        val hasExistingSources = (sourcesFile.exists() && sourcesFile.length() > 0) ||
+                (sourcesDir.isDirectory && sourcesDir.listFiles()?.any { it.name.endsWith(".list") || it.name.endsWith(".sources") } == true)
+
+        if (!hasExistingSources && definition.aptSources.isNotBlank()) {
+            log.info("[ROOTFS_CONFIG] No existing APT sources found; writing fallback sources for ${definition.distribution.displayName}")
             sourcesFile.parentFile?.mkdirs()
-            try {
-                Files.deleteIfExists(sourcesFile.toPath())
-            } catch (_: Exception) {
-                sourcesFile.delete()
-            }
             sourcesFile.writeText(definition.aptSources.trimIndent() + "\n")
+        } else {
+            log.info("[ROOTFS_CONFIG] Preserving existing rootfs APT configuration in ${sourcesFile.path}")
         }
     }
 }

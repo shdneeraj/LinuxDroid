@@ -52,17 +52,17 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
 import androidx.navigation.compose.rememberNavController
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import com.linuxdroid.app.R
 import com.linuxdroid.app.ui.components.DistroIcon
 import com.linuxdroid.app.ui.components.LinuxPenguinIcon
 import com.linuxdroid.app.ui.navigation.Screen
 import com.linuxdroid.app.ui.theme.*
+import com.linuxdroid.app.ui.viewmodel.DistributionFetchState
 import com.linuxdroid.app.ui.viewmodel.EnvironmentViewModel
 import com.linuxdroid.app.ui.viewmodel.SettingsViewModel
-import com.linuxdroid.core.model.Architecture
-import com.linuxdroid.core.model.Distribution
-import com.linuxdroid.core.model.Environment
-import com.linuxdroid.core.model.EnvironmentState
+import com.linuxdroid.core.model.*
 import com.linuxdroid.core.storage.StorageAuthorizationState
 import java.io.File
 
@@ -141,18 +141,16 @@ fun HomeScreen(
             if (!hasInstalledRootfs || installingEnv != null) {
                 // NO Rootfs Present -> Show Rootfs Installation Screen
                 RootfsInstallationCard(
+                    environmentViewModel = environmentViewModel,
                     installingEnv = installingEnv,
                     progress = installingEnv?.let { installProgress[it.id.value] },
                     statusText = installingEnv?.let { installStatusText[it.id.value] },
                     logs = installingEnv?.let { installerLogs[it.id.value] } ?: emptyList(),
                     onSettingsClick = { navController.navigate(Screen.Settings.route) },
-                    onInstall = { distro, name ->
-                        val detectedArch = Architecture.current()
-                        environmentViewModel.createEnvironment(
-                            name = name,
-                            distribution = distro,
-                            architecture = detectedArch,
-                            autoBootstrap = true,
+                    onInstallConfig = { config, name ->
+                        environmentViewModel.createEnvironmentWithConfig(
+                            installConfig = config,
+                            environmentName = name,
                         )
                     }
                 )
@@ -1075,24 +1073,61 @@ private fun getSystemOverview(context: Context, environment: Environment?): Syst
 /**
  * First-Time / No-Rootfs Installation Card with Automatic Architecture Detection.
  */
+/**
+ * First-Time / No-Rootfs Installation Card with Step-by-Step Configuration Flow.
+ *
+ * User Flow:
+ *  1. Choose Distribution (Debian / Ubuntu) -> Triggers background release fetch (does NOT install)
+ *  2. Display Installation Configuration:
+ *     - Select Release Version (Debian 13 Trixie / Debian 12 Bookworm, Ubuntu 24.04 Noble / 22.04 Jammy)
+ *     - Architecture: ARM64 (Auto detected)
+ *     - Username Input (validated)
+ *     - Password & Confirm Password Input (with show/hide and validation)
+ *  3. Explicit [Install] action button -> begins installation pipeline
+ */
 @Composable
 private fun RootfsInstallationCard(
+    environmentViewModel: EnvironmentViewModel,
     installingEnv: Environment?,
     progress: Float?,
     statusText: String?,
     logs: List<String>,
     onSettingsClick: () -> Unit,
-    onInstall: (Distribution, String) -> Unit,
+    onInstallConfig: (InstallConfig, String) -> Unit,
 ) {
     val neuColors = NeuTheme.colors
     val detectedArch = remember { Architecture.current() }
 
     var selectedDistro by remember { mutableStateOf(Distribution.DEBIAN) }
-    var envName by remember { mutableStateOf("Debian ARM64") }
+    val distroFetchState by environmentViewModel.distroFetchState.collectAsState()
 
+    // Trigger initial background metadata fetch for selected distro
     LaunchedEffect(selectedDistro) {
-        envName = "${selectedDistro.displayName} ARM64"
+        environmentViewModel.prepareDistribution(selectedDistro)
     }
+
+    val availableReleases = remember(selectedDistro) {
+        DistributionCatalog.getAvailableReleases(selectedDistro)
+    }
+    var selectedRelease by remember(selectedDistro) {
+        mutableStateOf(
+            availableReleases.firstOrNull { it.isDefault }?.releaseCode
+                ?: availableReleases.firstOrNull()?.releaseCode
+                ?: "bookworm"
+        )
+    }
+
+    var username by remember { mutableStateOf("user") }
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var confirmPasswordVisible by remember { mutableStateOf(false) }
+
+    val usernameResult = remember(username) { UsernameValidator.validate(username) }
+    val passwordResult = remember(password, confirmPassword) { PasswordValidator.validate(password, confirmPassword) }
+
+    val isFormValid = usernameResult == null && passwordResult == null && username.isNotBlank() && password.isNotBlank()
+    val envName = "${selectedDistro.displayName} ($selectedRelease)"
 
     NeuCard(
         modifier = Modifier.fillMaxWidth(),
@@ -1151,101 +1186,180 @@ private fun RootfsInstallationCard(
                 modifier = Modifier.padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                // Auto-Detected Architecture Badge Card
-                Surface(
-                    color = neuColors.surfacePressed,
-                    shape = RoundedCornerShape(12.dp),
-                    border = androidx.compose.foundation.BorderStroke(0.5.dp, neuColors.borderHighlight.copy(alpha = 0.5f)),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        NeuIconButton(
-                            onClick = {},
-                            enabled = false,
-                            size = 40.dp,
-                            tint = neuColors.success,
-                        ) {
-                            Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(22.dp))
-                        }
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Text(
-                                    "Detected Architecture:",
-                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = neuColors.textPrimary,
-                                )
-                                Text(
-                                    detectedArch.linuxArch.uppercase(),
-                                    fontFamily = SfMono,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    color = neuColors.primaryAccent,
-                                )
-                            }
-                            Text(
-                                "Auto-configured native ARM64 userspace · No manual selection needed",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = neuColors.textSecondary,
-                            )
-                        }
-                    }
-                }
-
                 if (installingEnv == null) {
-                    // Distribution Selection
+                    // ── Step 1: Distribution Selection ─────────────────────
                     Text(
-                        "Select Linux Distribution",
+                        "1. Choose Distribution",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = neuColors.textPrimary,
                     )
 
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
                         listOf(
-                            Triple(Distribution.DEBIAN, "Debian (Latest)", "Recommended · Ultra-stable & low memory footprint"),
-                            Triple(Distribution.UBUNTU, "Ubuntu 24.04 LTS (Noble)", "Popular · Broad software repository & developer tools"),
+                            Triple(Distribution.DEBIAN, "Debian", "Stable & Lightweight"),
+                            Triple(Distribution.UBUNTU, "Ubuntu", "Modern LTS & Packages"),
                         ).forEach { (distro, title, desc) ->
                             val isSelected = selectedDistro == distro
                             Surface(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { selectedDistro = distro },
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (isSelected) neuColors.surfacePressed else neuColors.background,
+                                    .weight(1f)
+                                    .clickable {
+                                        if (selectedDistro != distro) {
+                                            selectedDistro = distro
+                                            val releases = DistributionCatalog.getAvailableReleases(distro)
+                                            selectedRelease = releases.firstOrNull { it.isDefault }?.releaseCode
+                                                ?: releases.firstOrNull()?.releaseCode
+                                                ?: "bookworm"
+                                        }
+                                    },
+                                shape = RoundedCornerShape(14.dp),
+                                color = if (isSelected) neuColors.primaryAccent.copy(alpha = 0.10f) else neuColors.surfacePressed,
                                 border = androidx.compose.foundation.BorderStroke(
                                     width = if (isSelected) 1.5.dp else 0.5.dp,
                                     color = if (isSelected) neuColors.primaryAccent else neuColors.borderHighlight.copy(alpha = 0.3f),
-                                )
+                                ),
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(14.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
                                 ) {
-                                    RadioButton(
-                                        selected = isSelected,
-                                        onClick = { selectedDistro = distro },
-                                        colors = RadioButtonDefaults.colors(
-                                            selectedColor = neuColors.primaryAccent,
-                                        )
+                                    DistroIcon(distribution = distro, size = 36.dp)
+                                    Text(
+                                        text = title,
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = if (isSelected) neuColors.primaryAccent else neuColors.textPrimary,
                                     )
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            title,
-                                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                                            color = neuColors.textPrimary,
+                                    Text(
+                                        text = desc,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                                        color = neuColors.textSecondary,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Background release pre-fetch status indicator
+                    Surface(
+                        color = neuColors.surfacePressed,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            when (val state = distroFetchState) {
+                                is DistributionFetchState.Fetching -> {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(12.dp),
+                                        strokeWidth = 1.5.dp,
+                                        color = neuColors.primaryAccent,
+                                    )
+                                    Text(
+                                        text = state.message,
+                                        fontSize = 11.sp,
+                                        fontFamily = SfMono,
+                                        color = neuColors.textSecondary,
+                                        maxLines = 1,
+                                    )
+                                }
+                                is DistributionFetchState.Ready -> {
+                                    Icon(
+                                        Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = neuColors.success,
+                                    )
+                                    Text(
+                                        text = "Release data verified for ${state.distro.displayName}",
+                                        fontSize = 11.sp,
+                                        fontFamily = SfMono,
+                                        color = neuColors.success,
+                                        maxLines = 1,
+                                    )
+                                }
+                                is DistributionFetchState.Failed -> {
+                                    Icon(
+                                        Icons.Default.Info,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = neuColors.warning,
+                                    )
+                                    Text(
+                                        text = "Using cached catalog definition",
+                                        fontSize = 11.sp,
+                                        fontFamily = SfMono,
+                                        color = neuColors.textSecondary,
+                                        maxLines = 1,
+                                    )
+                                }
+                                else -> {
+                                    Text(
+                                        text = "Ready to configure",
+                                        fontSize = 11.sp,
+                                        fontFamily = SfMono,
+                                        color = neuColors.textSecondary,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Step 2: Installation Configuration ──────────────────
+                    Text(
+                        "2. Installation Configuration",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = neuColors.textPrimary,
+                    )
+
+                    // Version Selection
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            "Select Version",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = neuColors.textSecondary,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            availableReleases.forEach { release ->
+                                val isSelected = selectedRelease == release.releaseCode
+                                Surface(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { selectedRelease = release.releaseCode },
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (isSelected) neuColors.surfacePressed else neuColors.background,
+                                    border = androidx.compose.foundation.BorderStroke(
+                                        width = if (isSelected) 1.5.dp else 0.5.dp,
+                                        color = if (isSelected) neuColors.primaryAccent else neuColors.borderHighlight.copy(alpha = 0.3f),
+                                    ),
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        RadioButton(
+                                            selected = isSelected,
+                                            onClick = { selectedRelease = release.releaseCode },
+                                            colors = RadioButtonDefaults.colors(selectedColor = neuColors.primaryAccent),
+                                            modifier = Modifier.size(20.dp),
                                         )
                                         Text(
-                                            desc,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = neuColors.textSecondary,
+                                            text = release.displayName,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = neuColors.textPrimary,
+                                            maxLines = 1,
                                         )
                                     }
                                 }
@@ -1253,9 +1367,140 @@ private fun RootfsInstallationCard(
                         }
                     }
 
-                    // Install Action
+                    // Auto-Detected Architecture Indicator
+                    Surface(
+                        color = neuColors.surfacePressed,
+                        shape = RoundedCornerShape(10.dp),
+                        border = androidx.compose.foundation.BorderStroke(0.5.dp, neuColors.borderHighlight.copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(16.dp), tint = neuColors.success)
+                                Text("Target Architecture", style = MaterialTheme.typography.bodySmall, color = neuColors.textSecondary)
+                            }
+                            Text(
+                                "${detectedArch.linuxArch.uppercase()} (Auto Detected)",
+                                fontFamily = SfMono,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = neuColors.primaryAccent,
+                            )
+                        }
+                    }
+
+                    // Username Input
+                    OutlinedTextField(
+                        value = username,
+                        onValueChange = { username = it.trim().lowercase() },
+                        label = { Text("Linux Username") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Person, contentDescription = null, tint = neuColors.primaryAccent, modifier = Modifier.size(20.dp))
+                        },
+                        singleLine = true,
+                        isError = usernameResult != null && username.isNotEmpty(),
+                        supportingText = {
+                            if (usernameResult != null && username.isNotEmpty()) {
+                                Text(usernameResult, color = neuColors.error, fontSize = 11.sp)
+                            } else {
+                                Text("Primary Linux user account with sudo privileges", fontSize = 10.sp, color = neuColors.textSecondary)
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = neuColors.textPrimary,
+                            unfocusedTextColor = neuColors.textPrimary,
+                            focusedBorderColor = neuColors.primaryAccent,
+                            unfocusedBorderColor = neuColors.borderHighlight,
+                            focusedLabelColor = neuColors.primaryAccent,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    // Password Input
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text("Password") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Lock, contentDescription = null, tint = neuColors.primaryAccent, modifier = Modifier.size(20.dp))
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Icon(
+                                    imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                                    tint = neuColors.textSecondary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        },
+                        singleLine = true,
+                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = neuColors.textPrimary,
+                            unfocusedTextColor = neuColors.textPrimary,
+                            focusedBorderColor = neuColors.primaryAccent,
+                            unfocusedBorderColor = neuColors.borderHighlight,
+                            focusedLabelColor = neuColors.primaryAccent,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    // Confirm Password Input
+                    OutlinedTextField(
+                        value = confirmPassword,
+                        onValueChange = { confirmPassword = it },
+                        label = { Text("Confirm Password") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Lock, contentDescription = null, tint = neuColors.primaryAccent, modifier = Modifier.size(20.dp))
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { confirmPasswordVisible = !confirmPasswordVisible }) {
+                                Icon(
+                                    imageVector = if (confirmPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    contentDescription = if (confirmPasswordVisible) "Hide password" else "Show password",
+                                    tint = neuColors.textSecondary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        },
+                        singleLine = true,
+                        visualTransformation = if (confirmPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        isError = passwordResult != null && (password.isNotEmpty() || confirmPassword.isNotEmpty()),
+                        supportingText = {
+                            if (passwordResult != null && (password.isNotEmpty() || confirmPassword.isNotEmpty())) {
+                                Text(passwordResult, color = neuColors.error, fontSize = 11.sp)
+                            } else {
+                                Text("Password must be at least 4 characters", fontSize = 10.sp, color = neuColors.textSecondary)
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = neuColors.textPrimary,
+                            unfocusedTextColor = neuColors.textPrimary,
+                            focusedBorderColor = neuColors.primaryAccent,
+                            unfocusedBorderColor = neuColors.borderHighlight,
+                            focusedLabelColor = neuColors.primaryAccent,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    // ── Explicit [Install] Action Button ───────────────────
                     NeuButton(
-                        onClick = { onInstall(selectedDistro, envName) },
+                        onClick = {
+                            val config = InstallConfig(
+                                distro = selectedDistro,
+                                release = selectedRelease,
+                                username = username.trim(),
+                                password = password,
+                                architecture = detectedArch,
+                            )
+                            onInstallConfig(config, envName)
+                        },
+                        enabled = isFormValid,
                         isAccent = true,
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth(),
@@ -1264,29 +1509,45 @@ private fun RootfsInstallationCard(
                         Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            "Install & Bootstrap Environment",
+                            "Install LinuxDroid",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                         )
                     }
                 } else {
-                    // Installing State with Progress and Logs
+                    // Installing State with Stage Progress and Live Logs
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Text(
-                            "Installing ${installingEnv.name}...",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = neuColors.textPrimary,
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "Installing ${installingEnv.name}...",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = neuColors.textPrimary,
+                            )
+                            progress?.let { p ->
+                                Text(
+                                    "${(p * 100).toInt()}%",
+                                    fontFamily = SfMono,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = neuColors.primaryAccent,
+                                )
+                            }
+                        }
 
                         if (progress != null) {
                             LinearProgressIndicator(
                                 progress = { progress },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(8.dp),
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(4.dp)),
                                 color = neuColors.primaryAccent,
                                 trackColor = neuColors.surfacePressed,
                             )
@@ -1294,39 +1555,57 @@ private fun RootfsInstallationCard(
                             LinearProgressIndicator(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(8.dp),
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(4.dp)),
                                 color = neuColors.primaryAccent,
                                 trackColor = neuColors.surfacePressed,
                             )
                         }
 
                         statusText?.let {
-                            Text(
-                                it,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = neuColors.textSecondary,
-                            )
+                            Surface(
+                                color = neuColors.surfacePressed,
+                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(
+                                    text = it,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = SfMono,
+                                    color = neuColors.primaryAccent,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
 
                         // Live installer log console
                         Surface(
-                            color = Color(0xFF1E1E1E),
-                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF1A1A1A),
+                            shape = RoundedCornerShape(10.dp),
+                            border = androidx.compose.foundation.BorderStroke(0.5.dp, Color(0xFF333333)),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 100.dp, max = 220.dp),
+                                .heightIn(min = 120.dp, max = 240.dp),
                         ) {
                             Column(
                                 modifier = Modifier
                                     .padding(10.dp)
                                     .verticalScroll(rememberScrollState()),
                             ) {
-                                logs.takeLast(30).forEach { line ->
+                                logs.takeLast(40).forEach { line ->
+                                    val textColor = when {
+                                        line.contains("FAIL", ignoreCase = true) || line.contains("error", ignoreCase = true) -> Color(0xFFFF6B6B)
+                                        line.contains("PASS", ignoreCase = true) || line.contains("STAGE", ignoreCase = true) -> Color(0xFF81C784)
+                                        line.contains("DEPLOY", ignoreCase = true) -> Color(0xFF64B5F6)
+                                        else -> Color(0xFFCCCCCC)
+                                    }
                                     Text(
                                         text = line,
                                         fontFamily = SfMono,
                                         fontSize = 11.sp,
-                                        color = if (line.contains("error", ignoreCase = true)) Color(0xFFFF6B6B) else Color(0xFF81C784),
+                                        color = textColor,
                                     )
                                 }
                             }

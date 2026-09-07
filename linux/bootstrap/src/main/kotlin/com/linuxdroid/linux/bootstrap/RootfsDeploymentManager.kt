@@ -77,6 +77,8 @@ class RootfsDeploymentManager(
     private val runtimeSetup: RuntimeEnvironmentSetup = RuntimeEnvironmentSetup(),
     private val graphicalInstaller: GraphicalDependencyInstaller = GraphicalDependencyInstaller(runtimeBackend),
     private val packageInstaller: LinuxDroidPackageInstaller = LinuxDroidPackageInstaller(context, runtimeBackend),
+    private val standardPackageInstaller: StandardPackageInstaller = StandardPackageInstaller(runtimeBackend),
+    private val userConfigurator: UserConfigurator = UserConfigurator(runtimeBackend),
     private val validator: RootfsValidator = RootfsValidator(),
     private val dynamicResolver: DynamicDistributionResolver = DynamicDistributionResolver(),
 ) {
@@ -95,6 +97,7 @@ class RootfsDeploymentManager(
      */
     suspend fun deployRootfs(
         environment: Environment,
+        installConfig: InstallConfig? = null,
         lddmDebOverride: File? = null,
         lddeDebOverride: File? = null,
         onProgress: suspend (Float, String) -> Unit = { _, _ -> },
@@ -105,18 +108,32 @@ class RootfsDeploymentManager(
 
         mutex.withLock {
             val envKey = environmentId.value
-            log.info("[DEPLOY_START] Beginning rootfs deployment pipeline for $environmentId (${environment.distribution.displayName})")
-            onLog(">>> [DEPLOY_START] Initializing rootfs graphical deployment for ${environment.name} (${environment.distribution.displayName})")
+            val targetUser = installConfig?.username ?: environment.configuration.linuxUser
+            val targetPassword = installConfig?.password ?: ""
+            val targetDistro = installConfig?.distro ?: environment.distribution
+            val requestedRelease = installConfig?.release
+
+            log.info("[DEPLOY_START] Beginning rootfs deployment pipeline for $environmentId (${targetDistro.displayName}, user=$targetUser)")
+            onLog(">>> [DEPLOY_START] Initializing rootfs graphical deployment for ${environment.name} (${targetDistro.displayName})")
 
             // Check if existing environment is already complete and valid
             if (storage.verifyRootfs(environmentId)) {
                 val existingRootfs = storage.rootfsDir(environmentId)
-                val existingReport = validator.validate(
-                    existingRootfs,
-                    environment.distribution,
-                    environment.architecture,
-                    requireGraphicalStack = true,
-                )
+                val existingReport = if (installConfig != null) {
+                    validator.validateFinal(
+                        existingRootfs,
+                        targetDistro,
+                        environment.architecture,
+                        username = targetUser,
+                    )
+                } else {
+                    validator.validate(
+                        existingRootfs,
+                        targetDistro,
+                        environment.architecture,
+                        requireGraphicalStack = true,
+                    )
+                }
                 if (existingReport.isValid) {
                     log.info("[DEPLOY_READY] Existing rootfs already contains complete, verified graphical stack. Skipping deployment.")
                     onLog(">>> [DEPLOY_READY] Complete verified graphical stack found in ${existingRootfs.path}.")
@@ -143,7 +160,7 @@ class RootfsDeploymentManager(
             val tmpDir = storage.tmpDir(environmentId)
             val stagingDir = storage.stagingRootfsDir(environmentId)
 
-            val baseDefinition = DistributionCatalog.getDefinition(environment.distribution, environment.architecture)
+            val baseDefinition = DistributionCatalog.getDefinition(targetDistro, environment.architecture, requestedRelease)
             val definition = dynamicResolver.resolveLatest(baseDefinition, onLog)
             val source = definition.source
 
@@ -168,7 +185,7 @@ class RootfsDeploymentManager(
                         // 1. Prepare Base Rootfs (Download & Verify)
                         currentState = RootfsDeploymentState.ROOTFS_CREATING
                         _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                        onProgress(0.05f, "Downloading ${environment.distribution.displayName} base rootfs…")
+                        onProgress(0.05f, "Downloading ${targetDistro.displayName} base rootfs…")
                         onLog(">>> [DOWNLOAD] Fetching archive: ${source.url}")
                         downloadFile(source.url, tarball, onProgress, onLog)
 
@@ -187,24 +204,40 @@ class RootfsDeploymentManager(
                         currentState = RootfsDeploymentState.ROOTFS_EXTRACTED
                         _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
 
-                        // 3. Configure Staging Rootfs
+                        // Stage A — Extraction Validation
+                        val extractReport = validator.validateExtraction(stagingDir, targetDistro, environment.architecture)
+                        if (!extractReport.isValid) {
+                            val errMsg = "Stage A Extraction Validation failed with ${extractReport.errors.size} errors:\n${extractReport.formatSummary()}"
+                            log.error("[DEPLOY_FAILED] $errMsg")
+                            extractReport.errors.forEach { onLog(">>> [VALIDATE_FAIL] $it") }
+                            throw RuntimeError(environmentId, errMsg)
+                        }
+                        onLog(">>> [PASS] Stage A: Extraction validation verified base filesystem integrity.")
+
+                        // 3. Configure Staging Rootfs (preserves existing rootfs APT configuration)
                         currentState = RootfsDeploymentState.ROOTFS_CONFIGURING
                         _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                        onProgress(0.70f, "Configuring base system files…")
+                        onProgress(0.65f, "Configuring base system files…")
                         configurator.configure(stagingDir, definition)
 
                         // 4. Setup Runtime Infrastructure in Staging
                         currentState = RootfsDeploymentState.ROOTFS_RUNTIME_READY
                         _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                        onProgress(0.72f, "Preparing runtime infrastructure…")
+                        onProgress(0.70f, "Preparing runtime infrastructure…")
                         runtimeSetup.setup(stagingDir)
 
                         // 5. Promote Staging to Active
-                        onProgress(0.74f, "Promoting filesystem to active environment…")
+                        onProgress(0.72f, "Promoting filesystem to active environment…")
                         val promoted = storage.promoteStagedRootfs(environmentId)
                         if (!promoted) {
                             throw FilesystemError(finalRootfsDir.path, "Failed to promote staging rootfs to active directory")
                         }
+
+                        // Stage B — Runtime Validation
+                        if (!validator.validateRuntime(finalRootfsDir)) {
+                            throw RuntimeError(environmentId, "Stage B Runtime Validation failed: guest init or runtime dirs missing")
+                        }
+                        onLog(">>> [PASS] Stage B: Runtime infrastructure verified.")
                     } finally {
                         if (tarball.exists()) tarball.delete()
                         if (stagingDir.exists()) stagingDir.deleteRecursively()
@@ -217,53 +250,81 @@ class RootfsDeploymentManager(
                     runtimeSetup.setup(finalRootfsDir)
                 }
 
-                // 6. Ensure Graphical Dependencies (Wayland + Weston)
-                currentState = RootfsDeploymentState.ROOTFS_GRAPHICS_DEPLOYING
-                _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                onProgress(0.76f, "Ensuring Wayland and Weston packages…")
-                val graphicsResult = graphicalInstaller.ensureGraphicalDependencies(environment, finalRootfsDir, onProgress, onLog)
-
-                // 7. Install LinuxDroid Packages (LDDM and LDDE .deb)
+                // 6. Install Standard LinuxDroid Package Baseline
                 currentState = RootfsDeploymentState.ROOTFS_PACKAGES_INSTALLING
                 _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                onProgress(0.82f, "Installing LDDM display manager…")
+                onProgress(0.75f, "Installing standard Linux packages…")
+                standardPackageInstaller.installStandardPackages(environment, finalRootfsDir, onProgress, onLog)
+
+                // 7. Ensure Graphical Dependencies & Install LinuxDroid Packages
+                currentState = RootfsDeploymentState.ROOTFS_GRAPHICS_DEPLOYING
+                _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
+                onProgress(0.80f, "Ensuring Wayland and Weston packages…")
+                val graphicsResult = graphicalInstaller.ensureGraphicalDependencies(environment, finalRootfsDir, onProgress, onLog)
+
+                onProgress(0.84f, "Installing LDDM display manager…")
                 val lddmResult = packageInstaller.installLDDM(environment, finalRootfsDir, lddmDebOverride, onProgress, onLog)
 
-                onProgress(0.86f, "Installing LDDE desktop environment…")
+                onProgress(0.87f, "Installing LDDE desktop environment…")
                 val lddeResult = packageInstaller.installLDDE(environment, finalRootfsDir, lddeDebOverride, onProgress, onLog)
 
-                // 8. Validate Complete Graphical Stack
+                // Stage C — Graphics Deployment Validation (files only, no running GUI required)
+                val graphicsReport = validator.validateGraphics(finalRootfsDir, targetDistro, environment.architecture)
+                if (!graphicsReport.isValid) {
+                    val errMsg = "Stage C Graphics Deployment Validation failed with ${graphicsReport.errors.size} errors:\n${graphicsReport.formatSummary()}"
+                    log.error("[DEPLOY_FAILED] $errMsg")
+                    graphicsReport.errors.forEach { onLog(">>> [VALIDATE_FAIL] $it") }
+                    throw RuntimeError(environmentId, errMsg)
+                }
+                onLog(">>> [PASS] Stage C: Graphical components and desktop environment verified.")
+
+                // 8. Configure User Account, Shell, Sudo, and Password
+                onProgress(0.90f, "Configuring user account $targetUser…")
+                userConfigurator.configureUser(
+                    environment = environment,
+                    rootfsDir = finalRootfsDir,
+                    username = targetUser,
+                    password = targetPassword,
+                    homeDir = "/home/$targetUser",
+                    shell = "/usr/bin/zsh",
+                    onProgress = onProgress,
+                    onLog = onLog,
+                )
+
+                // 9. Mandatory APT Cleanup Sequence (autoremove -> clean -> update)
+                onProgress(0.93f, "Performing APT cache cleanup…")
+                onLog(">>> [CLEANUP] Executing mandatory APT cleanup sequence...")
+                executeAptCleanup(environment, finalRootfsDir, onLog)
+                val stagedPkgsDir = File(finalRootfsDir, "tmp/staging_pkgs")
+                if (stagedPkgsDir.exists()) stagedPkgsDir.deleteRecursively()
+                onLog(">>> [PASS] APT cache cleaned and temporary staged packages removed.")
+
+                // 10. Stage D — Final Rootfs Validation (checks installed artifacts; DOES NOT require running GUI)
                 currentState = RootfsDeploymentState.ROOTFS_VALIDATING
                 _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
-                onProgress(0.90f, "Validating complete graphical stack…")
-                onLog(">>> [VALIDATE] Performing full validation of Wayland, Weston, LDDM, and LDDE...")
-                val report = validator.validate(
+                onProgress(0.96f, "Performing final rootfs validation…")
+                onLog(">>> [VALIDATE] Performing Stage D full rootfs validation across all components...")
+                val report = validator.validateFinal(
                     finalRootfsDir,
-                    environment.distribution,
+                    targetDistro,
                     environment.architecture,
-                    requireGraphicalStack = true,
+                    username = targetUser,
                 )
 
                 if (!report.isValid) {
-                    val errMsg = "Graphical rootfs validation failed with ${report.errors.size} errors:\n${report.formatSummary()}"
+                    val errMsg = "Final rootfs validation failed with ${report.errors.size} errors:\n${report.formatSummary()}"
                     log.error("[DEPLOY_FAILED] $errMsg")
                     report.errors.forEach { onLog(">>> [VALIDATE_FAIL] $it") }
                     throw RuntimeError(environmentId, errMsg)
                 }
-                onLog(">>> [PASS] Full graphical stack validation succeeded.")
+                onLog(">>> [PASS] Stage D: Final rootfs validation succeeded across all components.")
 
-                // 9. Live Graphical Startup & Wayland Socket Smoke Test
-                onProgress(0.95f, "Testing graphical session startup…")
-                onLog(">>> [SMOKE_TEST] Performing live PRoot test of Guest Init and LDDM...")
-                runGraphicalStartupProbe(environment, finalRootfsDir, onLog)
-                onLog(">>> [PASS] Graphical session entrypoint verified successfully.")
-
-                // 10. Write Manifest and mark ROOTFS_READY
+                // 11. Write Manifest and mark ROOTFS_READY
                 currentState = RootfsDeploymentState.ROOTFS_READY
                 _deploymentStates.value = _deploymentStates.value + (envKey to currentState)
 
                 val metadata = RootfsMetadata(
-                    distribution = environment.distribution.name.lowercase(),
+                    distribution = targetDistro.name.lowercase(),
                     release = definition.release,
                     architecture = environment.architecture.linuxArch,
                     variant = definition.variant,
@@ -282,10 +343,14 @@ class RootfsDeploymentManager(
                 )
                 val metadataFile = File(storage.metadataDir(environmentId), "rootfs-manifest.json")
                 storage.writeAtomic(metadataFile, json.encodeToString(metadata))
-                log.info("[DEPLOY_READY] Recorded manifest with ROOTFS_READY at ${metadataFile.path}")
 
-                onProgress(1.0f, "${environment.distribution.displayName} graphical environment ready")
-                onLog(">>> [SUCCESS] Complete graphical stack is ready to run!")
+                val readyMarker = File(finalRootfsDir, "etc/linuxdroid/ROOTFS_READY")
+                readyMarker.parentFile?.mkdirs()
+                readyMarker.writeText("DISTRO=${targetDistro.name}\nRELEASE=${definition.release}\nUSERNAME=$targetUser\nREADY_AT=${System.currentTimeMillis()}\n")
+
+                log.info("[DEPLOY_READY] Recorded manifest and ROOTFS_READY marker at ${metadataFile.path}")
+                onProgress(1.0f, "${targetDistro.displayName} environment ready")
+                onLog(">>> [SUCCESS] Complete rootfs environment is ready!")
 
                 RootfsDeploymentResult(
                     environmentId = environmentId,
@@ -308,41 +373,57 @@ class RootfsDeploymentManager(
         }
     }
 
-    private suspend fun runGraphicalStartupProbe(
+    private suspend fun executeAptCleanup(
         environment: Environment,
         rootfsDir: File,
         onLog: suspend (String) -> Unit,
     ) {
         val backend = runtimeBackend ?: return
+        val extraEnv = mapOf(
+            "DEBIAN_FRONTEND" to "noninteractive",
+            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        )
 
-        // 1. Verify Guest Init executable
-        val probeCmd = listOf("/bin/sh", "-c", "test -x /sbin/linuxdroid-init && echo GUEST_INIT_OK")
-        val initRes = try {
+        // 1. apt-get autoremove --purge -y
+        onLog(">>> [CLEANUP] 1/3: apt-get autoremove --purge -y")
+        try {
             backend.executeAndWait(
                 environment = environment.copy(rootfsPath = rootfsDir.absolutePath),
-                command = probeCmd,
-                workingDirectory = "/",
-                timeoutMs = 15_000,
+                command = listOf("apt-get", "autoremove", "--purge", "-y"),
+                workingDirectory = "/root",
+                extraEnv = extraEnv,
+                timeoutMs = 60_000,
             )
-        } catch (_: Exception) { null }
-
-        if (initRes != null && initRes.stdout.contains("GUEST_INIT_OK")) {
-            onLog(">>> [PROBE] /sbin/linuxdroid-init verified executable inside PRoot.")
+        } catch (e: Exception) {
+            log.warn("[CLEANUP] autoremove warning: ${e.message}")
         }
 
-        // 2. Verify LDDM binary responsiveness
-        val lddmProbe = listOf("/bin/sh", "-c", "/usr/bin/lddm --help || /usr/bin/lddm --version")
-        val lddmRes = try {
+        // 2. apt-get clean
+        onLog(">>> [CLEANUP] 2/3: apt-get clean")
+        try {
             backend.executeAndWait(
                 environment = environment.copy(rootfsPath = rootfsDir.absolutePath),
-                command = lddmProbe,
-                workingDirectory = "/",
-                timeoutMs = 15_000,
+                command = listOf("apt-get", "clean"),
+                workingDirectory = "/root",
+                extraEnv = extraEnv,
+                timeoutMs = 30_000,
             )
-        } catch (_: Exception) { null }
+        } catch (e: Exception) {
+            log.warn("[CLEANUP] clean warning: ${e.message}")
+        }
 
-        if (lddmRes != null && (lddmRes.exitCode == 0 || lddmRes.stdout.contains("LDDM") || lddmRes.stdout.contains("LinuxDroid"))) {
-            onLog(">>> [PROBE] /usr/bin/lddm execution probe verified.")
+        // 3. apt-get update
+        onLog(">>> [CLEANUP] 3/3: apt-get update")
+        try {
+            backend.executeAndWait(
+                environment = environment.copy(rootfsPath = rootfsDir.absolutePath),
+                command = listOf("apt-get", "update"),
+                workingDirectory = "/root",
+                extraEnv = extraEnv,
+                timeoutMs = 60_000,
+            )
+        } catch (e: Exception) {
+            log.warn("[CLEANUP] update warning: ${e.message}")
         }
     }
 

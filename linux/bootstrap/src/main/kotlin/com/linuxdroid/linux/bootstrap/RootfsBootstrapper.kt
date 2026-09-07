@@ -70,8 +70,18 @@ class RootfsBootstrapper(
         onProgress: suspend (Float, String) -> Unit = { _, _ -> },
         onLog: suspend (String) -> Unit = { _ -> },
     ) {
+        bootstrapRootfs(environment, null, onProgress, onLog)
+    }
+
+    suspend fun bootstrapRootfs(
+        environment: Environment,
+        installConfig: InstallConfig?,
+        onProgress: suspend (Float, String) -> Unit = { _, _ -> },
+        onLog: suspend (String) -> Unit = { _ -> },
+    ) {
         deploymentManager.deployRootfs(
             environment = environment,
+            installConfig = installConfig,
             onProgress = onProgress,
             onLog = onLog,
         )
