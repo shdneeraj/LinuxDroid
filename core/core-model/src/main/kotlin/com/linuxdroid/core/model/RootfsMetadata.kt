@@ -21,6 +21,16 @@ data class RootfsMetadata(
     @SerialName("bootstrap_version")
     val bootstrapVersion: String = "1.0.0",
     val status: String = "ready",
+    @SerialName("deployment_state")
+    val deploymentState: String = "ROOTFS_READY",
+    @SerialName("lddm_version")
+    val lddmVersion: String? = null,
+    @SerialName("ldde_version")
+    val lddeVersion: String? = null,
+    @SerialName("weston_version")
+    val westonVersion: String? = null,
+    @SerialName("wayland_version")
+    val waylandVersion: String? = null,
     @SerialName("installed_at")
     val installedAt: Long = System.currentTimeMillis(),
 )

@@ -105,6 +105,7 @@ class RootfsValidator(
         rootfsDir: File,
         distribution: Distribution,
         architecture: Architecture = Architecture.ARM64,
+        requireGraphicalStack: Boolean = false,
     ): RootfsValidationReport {
         val checks = mutableListOf<ValidationCheckResult>()
         val errors = mutableListOf<String>()
@@ -241,11 +242,115 @@ class RootfsValidator(
             }
         }
 
+        // 6. Complete Graphical Stack Validation (Wayland, Weston, LDDM, LDDE)
+        if (requireGraphicalStack) {
+            log.info("[BOOTSTRAP_VALIDATE] Validating complete graphical stack (Wayland, Weston, LDDM, LDDE)...")
+
+            // 6.1 Wayland runtime libraries
+            val candidateLibDirs = listOf(
+                File(rootfsDir, "usr/lib/aarch64-linux-gnu"),
+                File(rootfsDir, "usr/lib/x86_64-linux-gnu"),
+                File(rootfsDir, "usr/lib64"),
+                File(rootfsDir, "usr/lib"),
+                File(rootfsDir, "lib/aarch64-linux-gnu"),
+                File(rootfsDir, "lib/x86_64-linux-gnu"),
+                File(rootfsDir, "lib64"),
+                File(rootfsDir, "lib"),
+            )
+            val hasWaylandClient = candidateLibDirs.any { dir ->
+                File(dir, "libwayland-client.so.0").exists() || File(dir, "libwayland-client.so").exists()
+            }
+            val hasWaylandServer = candidateLibDirs.any { dir ->
+                File(dir, "libwayland-server.so.0").exists() || File(dir, "libwayland-server.so").exists()
+            }
+            if (!hasWaylandClient || !hasWaylandServer) {
+                val msg = "Wayland runtime libraries missing (client=$hasWaylandClient, server=$hasWaylandServer)"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("wayland_runtime", false, msg))
+            } else {
+                checks.add(ValidationCheckResult("wayland_runtime", true, "libwayland-client and server libraries present"))
+            }
+
+            // 6.2 Weston compositor
+            val westonResolved = resolveGuestSymlink(rootfsDir, "/usr/bin/weston") ?: resolveGuestSymlink(rootfsDir, "/usr/local/bin/weston")
+            val hasHeadlessBackend = rootfsDir.walkTopDown().maxDepth(6).any { it.name == "headless-backend.so" }
+            if (westonResolved == null || !westonResolved.exists()) {
+                val msg = "Weston compositor executable (/usr/bin/weston) missing"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("weston_executable", false, msg))
+            } else if (!westonResolved.canExecute()) {
+                val msg = "Weston compositor executable (${westonResolved.path}) not executable"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("weston_executable", false, msg))
+            } else if (!hasHeadlessBackend) {
+                val msg = "Weston headless-backend.so module missing in rootfs"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("weston_backend", false, msg))
+            } else {
+                checks.add(ValidationCheckResult("weston_executable", true, "Weston compositor present with headless backend"))
+            }
+
+            // 6.3 LDDM (LinuxDroid Display Manager)
+            val lddmResolved = resolveGuestSymlink(rootfsDir, "/usr/bin/lddm") ?: resolveGuestSymlink(rootfsDir, "/usr/local/bin/lddm")
+            val lddmConf = File(rootfsDir, "etc/linuxdroid/lddm.conf")
+            val dpkgStatusText = try { File(rootfsDir, "var/lib/dpkg/status").readText() } catch (_: Exception) { "" }
+            val lddmInDpkg = dpkgStatusText.contains("Package: linuxdroid-display-manager") &&
+                    dpkgStatusText.contains("Status: install ok installed")
+
+            if (lddmResolved == null || !lddmResolved.exists()) {
+                val msg = "LDDM display manager executable (/usr/bin/lddm) missing"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("lddm_executable", false, msg))
+            } else if (!lddmResolved.canExecute()) {
+                val msg = "LDDM executable not executable: ${lddmResolved.path}"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("lddm_executable", false, msg))
+            } else if (!lddmConf.exists()) {
+                val msg = "LDDM configuration file (/etc/linuxdroid/lddm.conf) missing"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("lddm_config", false, msg))
+            } else if (!lddmInDpkg) {
+                val msg = "linuxdroid-display-manager package not registered in /var/lib/dpkg/status"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("lddm_package_state", false, msg))
+            } else {
+                checks.add(ValidationCheckResult("lddm_subsystem", true, "LDDM package, executable, and config verified"))
+            }
+
+            // 6.4 LDDE (LinuxDroid Desktop Environment)
+            val lddeResolved = resolveGuestSymlink(rootfsDir, "/usr/bin/ldde") ?:
+                    resolveGuestSymlink(rootfsDir, "/usr/bin/ldde-session") ?:
+                    resolveGuestSymlink(rootfsDir, "/usr/local/bin/ldde")
+            val lddeConf = File(rootfsDir, "etc/linuxdroid/desktop.conf")
+            val lddeInDpkg = dpkgStatusText.contains("Package: linuxdroid-desktop-environment") &&
+                    dpkgStatusText.contains("Status: install ok installed")
+
+            if (lddeResolved == null || !lddeResolved.exists()) {
+                val msg = "LDDE desktop executable (/usr/bin/ldde) missing"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("ldde_executable", false, msg))
+            } else if (!lddeResolved.canExecute()) {
+                val msg = "LDDE executable not executable: ${lddeResolved.path}"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("ldde_executable", false, msg))
+            } else if (!lddeConf.exists()) {
+                val msg = "LDDE configuration file (/etc/linuxdroid/desktop.conf) missing"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("ldde_config", false, msg))
+            } else if (!lddeInDpkg) {
+                val msg = "linuxdroid-desktop-environment package not registered in /var/lib/dpkg/status"
+                errors.add(msg)
+                checks.add(ValidationCheckResult("ldde_package_state", false, msg))
+            } else {
+                checks.add(ValidationCheckResult("ldde_subsystem", true, "LDDE package, executable, and config verified"))
+            }
+        }
+
         val isValid = errors.isEmpty()
         if (isValid) {
-            log.info("[BOOTSTRAP_VALIDATE] Rootfs validation PASSED for ${distribution.displayName}")
+            log.info("[BOOTSTRAP_VALIDATE] Rootfs validation PASSED for ${distribution.displayName} (graphicalStack=$requireGraphicalStack)")
         } else {
-            log.warn("[BOOTSTRAP_VALIDATE] Rootfs validation FAILED for ${distribution.displayName}: $errors")
+            log.warn("[BOOTSTRAP_VALIDATE] Rootfs validation FAILED for ${distribution.displayName} (graphicalStack=$requireGraphicalStack): $errors")
         }
 
         return RootfsValidationReport(

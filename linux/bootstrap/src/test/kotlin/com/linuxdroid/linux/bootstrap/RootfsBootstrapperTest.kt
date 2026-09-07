@@ -4,9 +4,7 @@ import android.content.Context
 import com.google.common.truth.Truth.assertThat
 import com.linuxdroid.core.filesystem.EnvironmentStorage
 import com.linuxdroid.core.model.*
-import io.mockk.coEvery
-import io.mockk.every
-import io.mockk.mockk
+import io.mockk.*
 import kotlinx.coroutines.runBlocking
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
@@ -48,7 +46,7 @@ class RootfsBootstrapperTest {
             val dummyRootfs = tempFolder.newFolder("dummy-rootfs")
             coEvery { storage.verifyRootfs(envId) } returns true
             every { storage.rootfsDir(envId) } returns dummyRootfs
-            every { validator.validate(dummyRootfs, Distribution.DEBIAN, Architecture.ARM64) } returns RootfsValidationReport(
+            every { validator.validate(dummyRootfs, Distribution.DEBIAN, Architecture.ARM64, any()) } returns RootfsValidationReport(
                 isValid = true,
                 distribution = Distribution.DEBIAN,
                 architecture = Architecture.ARM64,
